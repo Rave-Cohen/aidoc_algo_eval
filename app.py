@@ -4,7 +4,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from scipy import stats
 import streamlit as st
 
 st.set_page_config(
@@ -52,6 +51,22 @@ ORDER BY age_group
 """
 
 
+def group_distribution_query(group_col: str) -> str:
+    return f"""
+    SELECT
+        {group_col},
+        COUNT(*) AS scans,
+        SUM(CASE WHEN radiologist_answer = 'P' THEN 1 ELSE 0 END) AS positives,
+        ROUND(
+            SUM(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END)
+            / COUNT(*) * 100, 1
+        ) AS prevalence_pct
+    FROM filtered_df
+    GROUP BY {group_col}
+    ORDER BY {group_col}
+    """
+
+
 def group_accuracy_query(group_col: str) -> str:
     return f"""
     SELECT
@@ -69,6 +84,305 @@ def group_accuracy_query(group_col: str) -> str:
     GROUP BY {group_col}
     ORDER BY {group_col}
     """
+
+
+AGE_GROUP_BIN = """
+    CASE
+        WHEN age < 18 THEN '00-17'
+        WHEN age < 40 THEN '18-39'
+        WHEN age < 65 THEN '40-64'
+        ELSE '65+'
+    END AS age_group
+"""
+AGE_GROUP_ORDER = ["00-17", "18-39", "40-64", "65+"]
+PATIENT_CLASS_ORDER = ["ED", "IN"]
+GENDER_COLOR_MAP = {"male": "#2a9d8f", "female": "#bc4749"}
+DEPT_COLOR_MAP = {"ED": "#bc4749", "IN": "#2a9d8f"}
+
+
+def prevalence_sunburst(
+    df: pd.DataFrame,
+    path: list[str],
+    title: str,
+    sort_slices: bool = True,
+    *,
+    compact: bool = False,
+    show_title: bool = True,
+) -> go.Figure:
+    fig = px.sunburst(
+        df,
+        path=path,
+        values="scans",
+        title=title if show_title else None,
+        color="prevalence_pct",
+        color_continuous_scale="Tealrose",
+        custom_data=["scans", "positives", "prevalence_pct"],
+    )
+    fig.update_traces(
+        sort=sort_slices,
+        textinfo="label+percent parent+value",
+        insidetextorientation="radial",
+        textfont=dict(size=14 if compact else 15),
+        hovertemplate=(
+            "<b>%{label}</b><br>Scans: %{customdata[0]:,}"
+            "<br>Positives: %{customdata[1]:,}"
+            "<br>Prevalence: %{customdata[2]}%<extra></extra>"
+        ),
+    )
+    layout_kwargs = dict(
+        height=580 if compact else 700,
+        margin=dict(t=20 if compact and not show_title else 60, l=10, r=10, b=10),
+        uniformtext_minsize=12,
+        coloraxis_colorbar=dict(title="Prevalence %", thickness=12, len=0.75),
+    )
+    if show_title:
+        layout_kwargs["title_font"] = dict(size=18)
+    if not compact:
+        layout_kwargs["width"] = 900
+    fig.update_layout(**layout_kwargs)
+    return fig
+
+
+def age_distribution_by_gender_chart(df: pd.DataFrame, bin_width: int = 5) -> go.Figure:
+    ages = df["age"].dropna()
+    fig = go.Figure()
+    if ages.empty:
+        fig.update_layout(title="Age Distribution by Gender")
+        return fig
+
+    min_edge = int(np.floor(ages.min() / bin_width) * bin_width)
+    max_edge = int(np.ceil(ages.max() / bin_width) * bin_width)
+    bin_edges = np.arange(min_edge, max_edge + bin_width, bin_width)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    for gender in ["male", "female"]:
+        counts, _ = np.histogram(
+            df.loc[df["gender"] == gender, "age"].dropna(),
+            bins=bin_edges,
+        )
+        color = GENDER_COLOR_MAP[gender]
+        fig.add_trace(
+            go.Bar(
+                x=bin_centers,
+                y=counts,
+                name=gender,
+                marker=dict(color=color, line=dict(width=0)),
+                opacity=0.72,
+                width=bin_width * 0.92,
+                text=[str(c) if c else "" for c in counts],
+                textposition="outside",
+                textfont=dict(color=color, size=11, family="Arial Black, Arial, sans-serif"),
+                hovertemplate=(
+                    f"{gender}<br>Age %{{customdata}}<br>Count: %{{y:,}}<extra></extra>"
+                ),
+                customdata=[
+                    f"{int(lo)}–{int(hi)}"
+                    for lo, hi in zip(bin_edges[:-1], bin_edges[1:])
+                ],
+            )
+        )
+
+    fig.update_layout(
+        title="Age Distribution by Gender",
+        barmode="overlay",
+        xaxis=dict(title="Age (years)", tickmode="linear", dtick=bin_width),
+        yaxis=dict(title="Count"),
+        legend_title_text="",
+        bargap=0.05,
+        uniformtext_minsize=9,
+        margin=dict(t=70, r=20, b=50, l=50),
+    )
+    return fig
+
+
+def tat_dot_plot(duration_df: pd.DataFrame) -> go.Figure:
+    entity_order = ["Radiologist", "Algo 1", "Algo 2", "Algo 3"]
+    fig = go.Figure()
+    rng = np.random.default_rng(42)
+
+    for idx, entity in enumerate(entity_order):
+        values = duration_df[entity].dropna().to_numpy()
+        mean_val = float(np.mean(values))
+        x_jitter = idx + rng.uniform(-0.35, 0.35, len(values))
+        color = COLOR_MAP[entity]
+
+        fig.add_trace(
+            go.Scatter(
+                x=x_jitter,
+                y=values,
+                mode="markers",
+                name=entity,
+                marker=dict(color=color, size=4, opacity=0.2),
+                hovertemplate=f"{entity}<br>TAT: %{{y:.1f}} min<extra></extra>",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[idx - 0.38, idx + 0.38],
+                y=[mean_val, mean_val],
+                mode="lines",
+                line=dict(color=color, width=2.5, dash="dash"),
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[idx],
+                y=[mean_val],
+                mode="markers+text",
+                marker=dict(symbol="diamond", size=11, color=color, line=dict(width=1, color="white")),
+                text=[f"μ={mean_val:.1f}"],
+                textposition="top center",
+                textfont=dict(color=color, size=11),
+                showlegend=False,
+                hovertemplate=f"{entity}<br>Mean: {mean_val:.2f} min<extra></extra>",
+            )
+        )
+
+    fig.update_layout(
+        title="TAT Dot Plot (minutes)",
+        xaxis=dict(
+            tickvals=list(range(len(entity_order))),
+            ticktext=entity_order,
+            title="",
+        ),
+        yaxis_title="Minutes",
+        showlegend=False,
+        margin=dict(t=50, b=40, l=50, r=20),
+    )
+    return fig
+
+
+def tat_win_count_chart(duration_df: pd.DataFrame) -> go.Figure:
+    pairs = [
+        ("Radiologist", "Algo 1"),
+        ("Radiologist", "Algo 2"),
+        ("Radiologist", "Algo 3"),
+        ("Algo 1", "Algo 2"),
+        ("Algo 1", "Algo 3"),
+        ("Algo 2", "Algo 3"),
+    ]
+    fig = go.Figure()
+    for name_a, name_b in pairs:
+        col_a, col_b = name_a, name_b
+        a_wins = int((duration_df[col_a] < duration_df[col_b]).sum())
+        b_wins = int((duration_df[col_a] > duration_df[col_b]).sum())
+        total = len(duration_df)
+        matchup = f"{name_a} vs {name_b}"
+        fig.add_trace(
+            go.Bar(
+                y=[matchup], x=[a_wins / total * 100],
+                orientation="h",
+                marker_color=COLOR_MAP.get(name_a, "#636363"),
+                text=[f"{name_a}: {a_wins:,}"], textposition="inside",
+                showlegend=False,
+                hovertemplate=f"{name_a} faster: {a_wins:,} ({a_wins / total * 100:.1f}%)<extra></extra>",
+            )
+        )
+        fig.add_trace(
+            go.Bar(
+                y=[matchup], x=[b_wins / total * 100],
+                orientation="h",
+                marker_color=COLOR_MAP.get(name_b, "#636363"),
+                text=[f"{name_b}: {b_wins:,}"], textposition="inside",
+                showlegend=False,
+                hovertemplate=f"{name_b} faster: {b_wins:,} ({b_wins / total * 100:.1f}%)<extra></extra>",
+            )
+        )
+    fig.update_layout(
+        title="Who Finishes First? (% of scans)",
+        barmode="stack",
+        xaxis_title="% of scans",
+        yaxis_title="",
+        height=350,
+        margin=dict(l=150, t=50, b=40, r=20),
+    )
+    return fig
+
+
+def tat_clinical_gap_chart(
+    duration_df: pd.DataFrame, threshold: float = 0.5
+) -> tuple[go.Figure, float, float]:
+    diff = duration_df["Radiologist"] - duration_df["Algo 3"]
+    mean_gap = float(diff.mean())
+    median_gap = float(diff.median())
+    rad_slower = int((diff > threshold).sum())
+    algo3_slower = int((diff < -threshold).sum())
+    within_threshold = len(diff) - rad_slower - algo3_slower
+
+    clinical = pd.DataFrame([
+        {
+            "Category": f"Radiologist slower by >{threshold} min",
+            "Count": rad_slower,
+            "Pct": f"{rad_slower / len(diff) * 100:.1f}%",
+        },
+        {
+            "Category": f"Algo 3 slower by >{threshold} min",
+            "Count": algo3_slower,
+            "Pct": f"{algo3_slower / len(diff) * 100:.1f}%",
+        },
+        {
+            "Category": f"Within ±{threshold} min",
+            "Count": within_threshold,
+            "Pct": f"{within_threshold / len(diff) * 100:.1f}%",
+        },
+    ])
+    fig = px.bar(
+        clinical,
+        x="Category",
+        y="Count",
+        text="Pct",
+        title=f"Clinical Threshold: TAT Gap > {threshold} min (Radiologist vs Algo 3)",
+        color="Category",
+        color_discrete_map={
+            f"Radiologist slower by >{threshold} min": COLOR_MAP["Radiologist"],
+            f"Algo 3 slower by >{threshold} min": COLOR_MAP["Algo 3"],
+            f"Within ±{threshold} min": "rgba(128,128,128,0.5)",
+        },
+    )
+    fig.update_traces(textposition="outside")
+    fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="Scans")
+    return fig, mean_gap, median_gap
+
+
+def hourly_scans_rad_chart(
+    df: pd.DataFrame,
+    group_col: str,
+    color_map: dict[str, str],
+    title: str,
+) -> go.Figure:
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    for group, color in color_map.items():
+        sub = df[df[group_col] == group]
+        fig.add_trace(
+            go.Bar(
+                x=sub["hour"], y=sub["scans"],
+                name=f"{group} scans",
+                marker_color=color, opacity=0.5,
+            ),
+            secondary_y=False,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=sub["hour"], y=sub["mean_rad_min"],
+                mode="lines+markers",
+                name=f"{group} rad time",
+                line=dict(color=color, dash="dot", width=2),
+                marker=dict(color=color, size=6),
+            ),
+            secondary_y=True,
+        )
+    fig.update_layout(
+        title=title,
+        barmode="group",
+        legend_title_text="",
+        margin=dict(t=60, b=50, l=50, r=50),
+    )
+    fig.update_yaxes(title_text="Total Scans", secondary_y=False)
+    fig.update_yaxes(title_text="Mean Rad Time (min)", secondary_y=True)
+    fig.update_xaxes(title_text="Hour (0-23)")
+    return fig
 
 
 def accuracy_bar(df: pd.DataFrame, group_col: str, title: str) -> go.Figure:
@@ -167,157 +481,6 @@ ORDER BY age_group, gender
 """
 
 
-def _midrank(x: np.ndarray) -> np.ndarray:
-    order = np.argsort(x, kind="mergesort")
-    sorted_x = x[order]
-    n = len(x)
-    ranks = np.empty(n, dtype=np.float64)
-    i = 0
-    while i < n:
-        j = i + 1
-        while j < n and sorted_x[j] == sorted_x[i]:
-            j += 1
-        ranks[i:j] = 0.5 * (i + j - 1) + 1.0
-        i = j
-    out = np.empty(n, dtype=np.float64)
-    out[order] = ranks
-    return out
-
-
-def delong_aucs(y_true: np.ndarray, scores: np.ndarray):
-    """DeLong AUCs and covariance for k classifiers (k, n). Binary scores are valid."""
-    y_true = np.asarray(y_true).astype(int)
-    scores = np.asarray(scores, dtype=np.float64)
-    n_pos = int(y_true.sum())
-    n_neg = y_true.size - n_pos
-    if n_pos == 0 or n_neg == 0:
-        return None, None
-    k = scores.shape[0]
-    tx = np.empty((k, n_pos))
-    ty = np.empty((k, n_neg))
-    tz = np.empty((k, y_true.size))
-    for r in range(k):
-        tx[r] = _midrank(scores[r, y_true == 1])
-        ty[r] = _midrank(scores[r, y_true == 0])
-        tz[r] = _midrank(scores[r])
-    aucs = (tz[:, y_true == 1].sum(axis=1) - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
-    v01 = (tz[:, y_true == 1] - tx) / n_neg
-    v10 = 1.0 - (tz[:, y_true == 0] - ty) / n_pos
-    sx = np.cov(v01, ddof=1) if n_pos > 1 else np.zeros((k, k))
-    sy = np.cov(v10, ddof=1) if n_neg > 1 else np.zeros((k, k))
-    if np.ndim(sx) == 0:
-        sx = np.array([[sx]])
-        sy = np.array([[sy]])
-    cov = sx / n_pos + sy / n_neg
-    return aucs, cov
-
-
-def fmt_p(p) -> str:
-    if p is None or (isinstance(p, float) and np.isnan(p)):
-        return "—"
-    if p < 1e-4:
-        return f"{p:.2e}"
-    return f"{p:.4f}"
-
-
-def delong_omnibus_and_pairs(aucs: np.ndarray, cov: np.ndarray, names: list[str]):
-    k = len(names)
-    contrast = np.column_stack([np.ones(k - 1), -np.eye(k - 1)])
-    delta = contrast @ aucs
-    cov_c = contrast @ cov @ contrast.T
-    try:
-        chi2 = float(delta.T @ np.linalg.pinv(cov_c) @ delta)
-        p_omni = float(stats.chi2.sf(chi2, k - 1))
-    except np.linalg.LinAlgError:
-        chi2, p_omni = np.nan, np.nan
-
-    rows = []
-    for i in range(k):
-        for j in range(i + 1, k):
-            diff = aucs[i] - aucs[j]
-            var = cov[i, i] + cov[j, j] - 2 * cov[i, j]
-            if var <= 0:
-                z, p = np.nan, np.nan
-            else:
-                z = diff / np.sqrt(var)
-                p = float(2 * stats.norm.sf(abs(z)))
-            rows.append(
-                {
-                    "Pair": f"{names[i]} vs {names[j]}",
-                    "AUC diff": round(float(diff), 4),
-                    "z": "—" if np.isnan(z) else round(float(z), 3),
-                    "p-value": fmt_p(p),
-                }
-            )
-    return chi2, p_omni, pd.DataFrame(rows)
-
-
-def cochran_q(matrix: np.ndarray):
-    """matrix shape (n_scans, k_algos) with 0/1 outcomes."""
-    x = np.asarray(matrix, dtype=np.float64)
-    if x.size == 0 or x.shape[1] < 2:
-        return np.nan, np.nan, x.shape[0]
-    n, k = x.shape
-    col_sums = x.sum(axis=0)
-    row_sums = x.sum(axis=1)
-    total = col_sums.sum()
-    denom = k * total - np.sum(row_sums ** 2)
-    if denom <= 0:
-        return np.nan, np.nan, n
-    q = (k - 1) * (k * np.sum(col_sums ** 2) - total ** 2) / denom
-    p = float(stats.chi2.sf(q, k - 1))
-    return float(q), p, n
-
-
-def mcnemar_pairs(matrix: np.ndarray, names: list[str]):
-    n, k = matrix.shape
-    rows = []
-    n_pairs = k * (k - 1) / 2
-    alpha = 0.05 / n_pairs if n_pairs else 0.05
-    for i in range(k):
-        for j in range(i + 1, k):
-            a_ok = matrix[:, i].astype(bool)
-            b_ok = matrix[:, j].astype(bool)
-            b = int(np.sum(~a_ok & b_ok))
-            c = int(np.sum(a_ok & ~b_ok))
-            n_disc = b + c
-            if n_disc == 0:
-                p_exact = 1.0
-            else:
-                p_exact = float(stats.binomtest(min(b, c), n_disc, 0.5).pvalue)
-            rows.append(
-                {
-                    "Pair": f"{names[i]} vs {names[j]}",
-                    "A only": c,
-                    "B only": b,
-                    "discordant": n_disc,
-                    "McNemar p": fmt_p(p_exact),
-                    "sig (Bonferroni)": "yes" if p_exact < alpha else "no",
-                }
-            )
-    return pd.DataFrame(rows), alpha
-
-
-def algo_binary_matrix(df: pd.DataFrame, mode: str) -> np.ndarray:
-    """0/1 matrix (n, 3) for Cochran/McNemar. mode: accuracy | sensitivity | specificity."""
-    y = df["radiologist_answer"].eq("P")
-    preds = [
-        df["algo1_answer"].eq("P"),
-        df["algo2_answer"].eq("P"),
-        df["algo3_answer"].eq("P"),
-    ]
-    if mode == "accuracy":
-        cols = [p.eq(y).astype(int).to_numpy() for p in preds]
-        return np.column_stack(cols)
-    if mode == "sensitivity":
-        mask = y.to_numpy()
-        cols = [p.to_numpy()[mask].astype(int) for p in preds]
-        return np.column_stack(cols) if mask.any() else np.empty((0, 3), dtype=int)
-    mask = (~y).to_numpy()
-    cols = [(~p).to_numpy()[mask].astype(int) for p in preds]
-    return np.column_stack(cols) if mask.any() else np.empty((0, 3), dtype=int)
-
-
 @st.cache_data
 def load_data():
     file_path = "AI_data_analysis_exercise_(4)_(2)_(2)_(4).xlsx"
@@ -352,14 +515,30 @@ patient_classes = st.sidebar.multiselect(
     options=df["patient_class"].unique(),
     default=df["patient_class"].unique(),
 )
+genders = st.sidebar.multiselect(
+    "Select Gender",
+    options=sorted(df["gender"].unique()),
+    default=sorted(df["gender"].unique()),
+)
+
+age_max = int(df["age"].max())
+st.sidebar.markdown("**Age range (years)**")
+age_col1, age_col2 = st.sidebar.columns(2)
+age_lo = age_col1.number_input("From", min_value=0, max_value=age_max, value=0, step=1)
+age_hi = age_col2.number_input("To", min_value=0, max_value=age_max, value=age_max, step=1)
+if age_lo > age_hi:
+    age_lo, age_hi = age_hi, age_lo
 
 filtered_df = duckdb.sql(
     """
     SELECT * FROM df
     WHERE site IN list_transform(?, x -> x)
       AND patient_class IN list_transform(?, x -> x)
+      AND gender IN list_transform(?, x -> x)
+      AND age >= ?
+      AND age <= ?
     """,
-    params=[sites, patient_classes],
+    params=[sites, patient_classes, genders, age_lo, age_hi],
 ).df()
 
 total_scans = len(filtered_df)
@@ -374,30 +553,93 @@ col4.metric("Active Sites", f"{filtered_df['site'].nunique() if total_scans else
 
 st.divider()
 
-tab1, tab2, tab3 = st.tabs(["Overview", "Timelines", "Metrics"])
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["Overview", "Timelines", "Metrics", "Algo Performance"]
+)
 
 # --- TAB 1: OVERVIEW ---
 with tab1:
-    st.subheader("Patient Class: IN vs ED")
-    pc_df = duckdb.sql(group_accuracy_query("patient_class")).df()
+    st.info(
+        "**How to use this dashboard:**\n\n"
+        "Use the **sidebar filters** (left) to narrow data by site, department, gender, or age.\n\n"
+        "**Hover** over any chart for details.\n\n"
+        "**Click** legend items to toggle series on/off.\n\n"
+        "Click the 🏠 **house icon** on a chart toolbar to reset zoom and view.",
+        icon="💡",
+    )
+    vol_query = """
+    SELECT site, patient_class, gender,
+           COUNT(*) AS scans,
+           SUM(CASE WHEN radiologist_answer = 'P' THEN 1 ELSE 0 END) AS positives,
+           ROUND(SUM(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END)
+                 / COUNT(*) * 100, 1) AS prevalence_pct
+    FROM filtered_df
+    GROUP BY site, patient_class, gender
+    ORDER BY site, patient_class, gender
+    """
+    vol_df = duckdb.sql(vol_query).df()
 
-    pc_cols = st.columns(len(pc_df) if len(pc_df) else 1)
-    for i, row in pc_df.iterrows():
-        pc_cols[i].metric(
-            f"{row['patient_class']} scans",
-            f"{int(row['scans']):,}",
-            f"{row['prevalence_pct']}% prevalence",
+    age_vol_query = f"""
+    WITH binned AS (
+        SELECT *, {AGE_GROUP_BIN}
+        FROM filtered_df
+    )
+    SELECT patient_class, age_group,
+           COUNT(*) AS scans,
+           SUM(CASE WHEN radiologist_answer = 'P' THEN 1 ELSE 0 END) AS positives,
+           ROUND(SUM(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END)
+                 / COUNT(*) * 100, 1) AS prevalence_pct
+    FROM binned
+    GROUP BY patient_class, age_group
+    ORDER BY patient_class, age_group
+    """
+    age_vol_df = duckdb.sql(age_vol_query).df()
+    age_vol_df["patient_class"] = pd.Categorical(
+        age_vol_df["patient_class"], categories=PATIENT_CLASS_ORDER, ordered=True
+    )
+    age_vol_df["age_group"] = pd.Categorical(
+        age_vol_df["age_group"], categories=AGE_GROUP_ORDER, ordered=True
+    )
+    age_vol_df = age_vol_df.sort_values(["patient_class", "age_group"])
+
+    pie_col1, pie_col2 = st.columns(2, gap="medium")
+    with pie_col1:
+        st.markdown("#### Scan Volume: Site → Department → Gender")
+        st.plotly_chart(
+            prevalence_sunburst(
+                vol_df,
+                ["site", "patient_class", "gender"],
+                "Scan Volume: Site → Department → Gender",
+                compact=True,
+                show_title=False,
+            ),
+            use_container_width=True,
+        )
+    with pie_col2:
+        st.markdown("#### Prevalence by Age: Department → Age Group")
+        st.plotly_chart(
+            prevalence_sunburst(
+                age_vol_df,
+                ["patient_class", "age_group"],
+                "Prevalence by Age: Department → Age Group",
+                sort_slices=False,
+                compact=True,
+                show_title=False,
+            ),
+            use_container_width=True,
         )
 
-    st.dataframe(pc_df, use_container_width=True, hide_index=True)
-    st.plotly_chart(
-        accuracy_bar(pc_df, "patient_class", "Accuracy (%) by Patient Class"),
-        use_container_width=True,
+    st.markdown(
+        "**Notes**\n\n"
+        "- Prevalence seems to be consistently higher in the **IN** department.\n\n"
+        "- Prevalence seems to be higher in **younger age groups**.\n\n"
+        "- There is no notable difference in distributions between the **two sites** provided.\n\n"
+        "- **Males** are much more common in the **ED** department."
     )
 
     st.divider()
     st.subheader("Gender")
-    gender_df = duckdb.sql(group_accuracy_query("gender")).df()
+    gender_df = duckdb.sql(group_distribution_query("gender")).df()
 
     g_cols = st.columns(len(gender_df) if len(gender_df) else 1)
     for i, row in gender_df.iterrows():
@@ -408,27 +650,174 @@ with tab1:
         )
 
     st.dataframe(gender_df, use_container_width=True, hide_index=True)
-    st.plotly_chart(
-        accuracy_bar(gender_df, "gender", "Accuracy (%) by Gender"),
-        use_container_width=True,
+
+    fig_age_dist = age_distribution_by_gender_chart(filtered_df)
+    st.plotly_chart(fig_age_dist, use_container_width=True)
+    st.markdown(
+        "**Notes:** This can provide insight about which statistical results are more significant."
     )
 
     st.divider()
-    st.subheader("Age Subgroups")
-    st.markdown(
-        "Radiologist line shows positive rate (prevalence) per age bin. "
-        "Grey bars show scan count per bin (right axis)."
+    st.subheader("Commonness")
+    st.markdown("Hourly, monthly, and weekly patterns of scan volume and positive rates.")
+
+    # ---- temporal base query ----
+    temporal_base = duckdb.sql("""
+    SELECT *,
+        EXTRACT(HOUR FROM scan_timestamp) AS hour,
+        EXTRACT(DOW FROM scan_timestamp) AS dow,
+        EXTRACT(MONTH FROM scan_timestamp) AS month
+    FROM filtered_df
+    WHERE scan_timestamp IS NOT NULL
+    """).df()
+
+    MONTH_LABELS = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
+                    7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"}
+    DOW_LABELS = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+
+    st.markdown("##### Hourly Total Scan Volume")
+    hourly_total_overall = duckdb.sql("""
+    SELECT CAST(hour AS INTEGER) AS hour,
+           COUNT(*) AS scans
+    FROM temporal_base
+    GROUP BY hour ORDER BY hour
+    """).df()
+
+    fig_tvm = go.Figure(go.Bar(
+        x=hourly_total_overall["hour"], y=hourly_total_overall["scans"],
+        marker_color="#6a994e", name="All scans",
+    ))
+    mean_val = hourly_total_overall["scans"].mean()
+    fig_tvm.add_hline(
+        y=mean_val, line_dash="dash", line_color="#bc4749",
+        annotation_text=f"Mean: {mean_val:.0f}",
     )
-    age_df = duckdb.sql(AGE_QUERY).df()
-    st.dataframe(age_df, use_container_width=True, hide_index=True)
-    st.plotly_chart(age_subgroup_chart(age_df), use_container_width=True)
+    fig_tvm.update_layout(
+        title="Hourly Total Scan Volume (All Scans)",
+        xaxis_title="Hour (0-23)", yaxis_title="Total Scans",
+        margin=dict(t=50),
+    )
+    st.plotly_chart(fig_tvm, use_container_width=True)
+    st.markdown(
+        "**Note:** Utilization of scanning seems pretty robust and consistent (on both sites)."
+    )
+
+    st.markdown("##### Hourly Positive Rate")
+    hourly_pos_overall = duckdb.sql("""
+    SELECT CAST(hour AS INTEGER) AS hour,
+           ROUND(SUM(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END) / COUNT(*) * 100, 1) AS pos_rate
+    FROM temporal_base
+    GROUP BY hour ORDER BY hour
+    """).df()
+
+    fig_prm = go.Figure(go.Scatter(
+        x=hourly_pos_overall["hour"], y=hourly_pos_overall["pos_rate"],
+        mode="lines+markers", marker_color="#6a994e", name="All scans",
+    ))
+    mean_pr = hourly_pos_overall["pos_rate"].mean()
+    fig_prm.add_hline(
+        y=mean_pr, line_dash="dash", line_color="#bc4749",
+        annotation_text=f"Mean: {mean_pr:.1f}%",
+    )
+    fig_prm.update_layout(
+        title="Hourly Positive Rate (All Scans)",
+        xaxis_title="Hour (0-23)", yaxis_title="Positive Rate (%)",
+        margin=dict(t=50),
+    )
+    st.plotly_chart(fig_prm, use_container_width=True)
+    st.markdown(
+        "**Note:** \n\n"
+        "It can be interesting to hypothesize and do more research on peak times - "
+        "e.g. night hours **00:00–02:00** might be correlated with some type of "
+        "ICH for a reason."
+    )
+
+    st.markdown("##### Monthly Positive Rate")
+    monthly_pos_overall = duckdb.sql("""
+    SELECT CAST(month AS INTEGER) AS month,
+           ROUND(SUM(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END) / COUNT(*) * 100, 1) AS pos_rate
+    FROM temporal_base
+    GROUP BY month ORDER BY month
+    """).df()
+    monthly_pos_overall["month_name"] = monthly_pos_overall["month"].map(MONTH_LABELS)
+
+    fig_mpm = go.Figure(go.Scatter(
+        x=monthly_pos_overall["month_name"], y=monthly_pos_overall["pos_rate"],
+        mode="lines+markers", marker_color="#6a994e", name="All scans",
+    ))
+    mean_mp = monthly_pos_overall["pos_rate"].mean()
+    fig_mpm.add_hline(
+        y=mean_mp, line_dash="dash", line_color="#bc4749",
+        annotation_text=f"Mean: {mean_mp:.1f}%",
+    )
+    fig_mpm.update_layout(
+        title="Monthly Positive Rate (All Scans)",
+        xaxis_title="Month", yaxis_title="Positive Rate (%)",
+        margin=dict(t=50),
+    )
+    st.plotly_chart(fig_mpm, use_container_width=True)
+    st.markdown(
+        "**Note:** Prevalence seems higher in **summer months** — might be worth investigating further. "
+        "If a certain ICH state correlates with summer, that could inform operational decisions or "
+        "help adjust algorithm weights."
+    )
+
+    # ---- Heatmap: Hour × Day-of-Week ----
+    st.markdown("##### Positive Rate Heatmap: Day-of-Week × Hour")
+    heatmap_df = duckdb.sql("""
+    SELECT CAST(dow AS INTEGER) AS dow, CAST(hour AS INTEGER) AS hour,
+           COUNT(*) AS scans,
+           ROUND(SUM(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END) / COUNT(*) * 100, 1) AS pos_rate
+    FROM temporal_base
+    GROUP BY dow, hour
+    ORDER BY dow, hour
+    """).df()
+    dow_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    heatmap_df["day_name"] = heatmap_df["dow"].map(DOW_LABELS)
+    pivot = heatmap_df.pivot(index="day_name", columns="hour", values="pos_rate").reindex(dow_order)
+
+    hottest_idx = heatmap_df.loc[heatmap_df["pos_rate"].idxmax()]
+    hottest_day = DOW_LABELS[int(hottest_idx["dow"])]
+    hottest_hour = int(hottest_idx["hour"])
+    hottest_rate = hottest_idx["pos_rate"]
+
+    coldest_idx = heatmap_df.loc[heatmap_df["pos_rate"].idxmin()]
+    coldest_day = DOW_LABELS[int(coldest_idx["dow"])]
+    coldest_hour = int(coldest_idx["hour"])
+    coldest_rate = coldest_idx["pos_rate"]
+
+    fig_heat = px.imshow(
+        pivot, aspect="auto",
+        title="Positive Rate (%) — Day × Hour",
+        labels={"x": "Hour", "y": "Day", "color": "Pos Rate (%)"},
+        color_continuous_scale="RdYlGn_r",
+    )
+    fig_heat.update_layout(
+        height=400,
+        margin=dict(t=60, b=40, l=60, r=20),
+        coloraxis_colorbar=dict(title="Rate %", thickness=12),
+    )
+    fig_heat.add_annotation(
+        x=hottest_hour, y=hottest_day,
+        text="🔥", showarrow=False, font=dict(size=18),
+    )
+    fig_heat.add_annotation(
+        x=coldest_hour, y=coldest_day,
+        text="❄️", showarrow=False, font=dict(size=18),
+    )
+    st.plotly_chart(fig_heat, use_container_width=True)
+    st.markdown(
+        f"**🔥 Hottest:** {hottest_day} at {hottest_hour}:00 ({hottest_rate}% positive rate)  \n"
+        f"**❄️ Coldest:** {coldest_day} at {coldest_hour}:00 ({coldest_rate}% positive rate)"
+    )
 
 # --- TAB 2: TIMELINES ---
 with tab2:
     st.subheader("Processing Timelines & Turnaround Time (TAT)")
     st.markdown(
-        "Completion time in minutes from `algos_start_run`. "
-        "Rows with missing timestamps or negative durations are excluded."
+        "Completion time in minutes from `algos_start_run`.\n\n"
+        "Timestamps are stored to **millisecond** precision and TAT is computed from the full datetime difference.\n\n"
+        "Rows with missing timestamps or negative durations are excluded from this tab."
     )
 
     duration_query = """
@@ -470,7 +859,12 @@ with tab2:
     ).df()["n"].iloc[0]
     dropped = int(n_with_times) - len(duration_df)
     if dropped:
-        st.caption(f"Excluded {dropped:,} rows with negative TAT (finish before start).")
+        st.caption(
+            f"Excluded {dropped:,} rows with negative TAT (finish before start). "
+            "In the full dataset this is usually a small number of cases where Algo 1 "
+            "finishes a few seconds before its recorded start time, or the radiologist "
+            "signed slightly before `algos_start_run`."
+        )
 
     if duration_df.empty:
         st.info("No valid TAT rows after filtering missing or negative durations.")
@@ -494,6 +888,7 @@ with tab2:
         )
 
         tat_long = duration_df.melt(var_name="Entity", value_name="Minutes")
+        tat_means = duration_df.mean()
         fig_box = px.box(
             tat_long,
             x="Entity",
@@ -503,8 +898,102 @@ with tab2:
             title="TAT Distribution (minutes)",
             points=False,
         )
+        for trace in fig_box.data:
+            mean_val = tat_means[trace.name]
+            trace.boxmean = True
+            trace.hovertemplate = (
+                f"<b>{trace.name}</b><br>"
+                f"Mean: {mean_val:.2f} min<br>"
+                "Median: %{median:.2f} min<br>"
+                "Q1: %{q1:.2f} min<br>"
+                "Q3: %{q3:.2f} min<br>"
+                "<extra></extra>"
+            )
         fig_box.update_layout(showlegend=False, xaxis_title="")
         st.plotly_chart(fig_box, use_container_width=True)
+
+        st.plotly_chart(tat_dot_plot(duration_df), use_container_width=True)
+
+        st.divider()
+        st.markdown("##### Who Finishes First?")
+        st.plotly_chart(tat_win_count_chart(duration_df), use_container_width=True)
+
+        st.markdown("##### TAT Gap: Radiologist vs Algo 3")
+        fig_clin, mean_gap, median_gap = tat_clinical_gap_chart(duration_df)
+        gap_col1, gap_col2 = st.columns(2)
+        gap_col1.metric("Mean gap (Rad − Algo 3)", f"{mean_gap:.2f} min")
+        gap_col2.metric("Median gap", f"{median_gap:.2f} min")
+        st.plotly_chart(fig_clin, use_container_width=True)
+        st.markdown(
+            "**Note:** It seems that most of the time the TAT gaps between Algo 3 and the "
+            "Radiologist are minor."
+        )
+
+        st.divider()
+        st.subheader("Scan Volume & Radiologist Time per Hour")
+        hourly_gender_tat = duckdb.sql("""
+        SELECT
+            CAST(EXTRACT(HOUR FROM scan_timestamp) AS INTEGER) AS hour,
+            gender,
+            COUNT(*) AS scans,
+            ROUND(
+                AVG(EPOCH(radiologist_sign_time - algos_start_run) / 60.0), 2
+            ) AS mean_rad_min
+        FROM filtered_df
+        WHERE scan_timestamp IS NOT NULL
+          AND radiologist_sign_time IS NOT NULL
+          AND algos_start_run IS NOT NULL
+          AND EPOCH(radiologist_sign_time - algos_start_run) >= 0
+        GROUP BY hour, gender
+        ORDER BY hour, gender
+        """).df()
+
+        hourly_dept_tat = duckdb.sql("""
+        SELECT
+            CAST(EXTRACT(HOUR FROM scan_timestamp) AS INTEGER) AS hour,
+            patient_class,
+            COUNT(*) AS scans,
+            ROUND(
+                AVG(EPOCH(radiologist_sign_time - algos_start_run) / 60.0), 2
+            ) AS mean_rad_min
+        FROM filtered_df
+        WHERE scan_timestamp IS NOT NULL
+          AND radiologist_sign_time IS NOT NULL
+          AND algos_start_run IS NOT NULL
+          AND EPOCH(radiologist_sign_time - algos_start_run) >= 0
+        GROUP BY hour, patient_class
+        ORDER BY hour, patient_class
+        """).df()
+
+        hour_col1, hour_col2 = st.columns(2, gap="medium")
+        with hour_col1:
+            st.markdown("##### By Gender")
+            st.plotly_chart(
+                hourly_scans_rad_chart(
+                    hourly_gender_tat,
+                    "gender",
+                    GENDER_COLOR_MAP,
+                    "Hourly Scan Volume & Radiologist Time — by Gender",
+                ),
+                use_container_width=True,
+            )
+            st.markdown(
+                "**Note:** Female radiologist verdicts take longer than male radiologist verdicts."
+            )
+        with hour_col2:
+            st.markdown("##### By Department")
+            st.plotly_chart(
+                hourly_scans_rad_chart(
+                    hourly_dept_tat,
+                    "patient_class",
+                    DEPT_COLOR_MAP,
+                    "Hourly Scan Volume & Radiologist Time — by Department",
+                ),
+                use_container_width=True,
+            )
+            st.markdown(
+                "**Note:** ED radiologist verdicts take around ~1 minute longer relative to IN."
+            )
 
 # --- TAB 3: METRICS ---
 with tab3:
@@ -627,78 +1116,6 @@ with tab3:
     st.plotly_chart(fig_ag_s, use_container_width=True)
 
     st.divider()
-    st.subheader("Statistical Tests")
-    st.markdown(
-        "Ground truth is `radiologist_answer`. This file only has boolean P/N outputs "
-        "(no probability scores), so DeLong is run on those 0/1 predictions. "
-        "At a single operating point, AUC equals (sensitivity + specificity) / 2."
-    )
-
-    if filtered_df.empty:
-        st.info("No rows in the current filter.")
-    else:
-        y_true = filtered_df["radiologist_answer"].eq("P").astype(int).to_numpy()
-        scores = np.vstack(
-            [
-                filtered_df["algo1_answer"].eq("P").astype(int).to_numpy(),
-                filtered_df["algo2_answer"].eq("P").astype(int).to_numpy(),
-                filtered_df["algo3_answer"].eq("P").astype(int).to_numpy(),
-            ]
-        )
-        aucs, cov = delong_aucs(y_true, scores)
-        st.markdown("**DeLong test (AUC-ROC)**")
-        if aucs is None:
-            st.warning("DeLong needs both positive and negative ground-truth cases.")
-        else:
-            auc_table = pd.DataFrame(
-                {"Algorithm": ALGO_COLS, "AUC": np.round(aucs, 4)}
-            )
-            chi2, p_omni, pair_df = delong_omnibus_and_pairs(aucs, cov, ALGO_COLS)
-            st.dataframe(auc_table, use_container_width=True, hide_index=True)
-            st.caption(
-                f"Omnibus DeLong (3 AUCs equal): chi² = {chi2:.3f}, p = {fmt_p(p_omni)}"
-                if pd.notna(p_omni)
-                else "Omnibus DeLong could not be computed."
-            )
-            st.dataframe(pair_df, use_container_width=True, hide_index=True)
-
-            fig_auc = px.bar(
-                auc_table,
-                x="Algorithm",
-                y="AUC",
-                color="Algorithm",
-                color_discrete_map=COLOR_MAP,
-                title="AUC at the boolean operating point",
-                range_y=[0, 1],
-            )
-            fig_auc.update_layout(showlegend=False, xaxis_title="")
-            st.plotly_chart(fig_auc, use_container_width=True)
-
-        st.markdown("**Cochran's Q (matched binary outcomes)**")
-        st.caption(
-            "If Q is significant (p < 0.05), pairwise McNemar tests (exact, Bonferroni-corrected) "
-            "show which algorithms differ. A only / B only are discordant counts for the pair."
-        )
-        for mode, label in [
-            ("accuracy", "Accuracy (correct vs radiologist)"),
-            ("sensitivity", "Sensitivity (among GT-positive scans)"),
-            ("specificity", "Specificity (among GT-negative scans)"),
-        ]:
-            mat = algo_binary_matrix(filtered_df, mode)
-            q, p_q, n_used = cochran_q(mat)
-            st.markdown(f"*{label}* — n = {n_used:,}")
-            if pd.isna(p_q):
-                st.caption("Q undefined (algorithms never disagree on this subset).")
-                continue
-            st.caption(f"Cochran's Q = {q:.3f}, p = {fmt_p(p_q)}")
-            if p_q < 0.05:
-                mc_df, alpha = mcnemar_pairs(mat, ALGO_COLS)
-                st.caption(f"Pairwise McNemar, Bonferroni α = {alpha:.4f}")
-                st.dataframe(mc_df, use_container_width=True, hide_index=True)
-            else:
-                st.caption("No significant difference among the three algorithms; McNemar not run.")
-
-    st.divider()
     st.subheader("Accuracy by Hospital Site")
     site_query = """
     SELECT
@@ -730,3 +1147,50 @@ with tab3:
     )
     fig_site.update_layout(legend_title_text="")
     st.plotly_chart(fig_site, use_container_width=True)
+
+# --- TAB 4: ALGO PERFORMANCE ---
+with tab4:
+    st.subheader("Patient Class: IN vs ED")
+    pc_df = duckdb.sql(group_accuracy_query("patient_class")).df()
+
+    pc_cols = st.columns(len(pc_df) if len(pc_df) else 1)
+    for i, row in pc_df.iterrows():
+        pc_cols[i].metric(
+            f"{row['patient_class']} scans",
+            f"{int(row['scans']):,}",
+            f"{row['prevalence_pct']}% prevalence",
+        )
+
+    st.dataframe(pc_df, use_container_width=True, hide_index=True)
+    st.plotly_chart(
+        accuracy_bar(pc_df, "patient_class", "Accuracy (%) by Patient Class"),
+        use_container_width=True,
+    )
+
+    st.divider()
+    st.subheader("Gender")
+    gender_algo_df = duckdb.sql(group_accuracy_query("gender")).df()
+
+    g_cols = st.columns(len(gender_algo_df) if len(gender_algo_df) else 1)
+    for i, row in gender_algo_df.iterrows():
+        g_cols[i].metric(
+            f"{row['gender']} scans",
+            f"{int(row['scans']):,}",
+            f"{row['prevalence_pct']}% prevalence",
+        )
+
+    st.dataframe(gender_algo_df, use_container_width=True, hide_index=True)
+    st.plotly_chart(
+        accuracy_bar(gender_algo_df, "gender", "Accuracy (%) by Gender"),
+        use_container_width=True,
+    )
+
+    st.divider()
+    st.subheader("Age Subgroups")
+    st.markdown(
+        "Radiologist line shows positive rate (prevalence) per age bin. "
+        "Grey bars show scan count per bin (right axis)."
+    )
+    age_df = duckdb.sql(AGE_QUERY).df()
+    st.dataframe(age_df, use_container_width=True, hide_index=True)
+    st.plotly_chart(age_subgroup_chart(age_df), use_container_width=True)
