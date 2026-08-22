@@ -794,7 +794,17 @@ def diagnostic_radar_chart(metrics_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def age_gender_sensitivity_line_chart(ag_df: pd.DataFrame) -> go.Figure:
+def overall_sensitivity_pct(df: pd.DataFrame, gender: str, algo_col: str) -> float:
+    sub = df[(df["gender"] == gender) & (df["age"] >= 5)]
+    gt_pos = sub[sub["radiologist_answer"] == "P"]
+    if gt_pos.empty:
+        return np.nan
+    return round((gt_pos[algo_col] == "P").mean() * 100, 1)
+
+
+def age_gender_sensitivity_line_chart(
+    ag_df: pd.DataFrame, source_df: pd.DataFrame
+) -> go.Figure:
     x_categories = [str(label) for label in FINE_AGE_LABELS]
     fig = make_subplots(
         rows=1,
@@ -806,14 +816,17 @@ def age_gender_sensitivity_line_chart(ag_df: pd.DataFrame) -> go.Figure:
         sub = ag_df[ag_df["gender"] == gender].sort_values("age_group")
         for algo in ALGO_COLS:
             col_name = f"{algo} Sens"
+            algo_col = ALGO_ANSWER_COLS[ALGO_COLS.index(algo)]
+            color = COLOR_MAP[algo]
+            mean_sens = overall_sensitivity_pct(source_df, gender, algo_col)
+
             fig.add_trace(
                 go.Scatter(
                     x=sub["age_group"].astype(str),
                     y=sub[col_name],
-                    mode="lines+markers",
+                    mode="lines",
                     name=algo,
-                    line=dict(color=COLOR_MAP[algo], width=3, shape="linear"),
-                    marker=dict(color=COLOR_MAP[algo], size=8, line=dict(width=1, color="white")),
+                    line=dict(color=color, width=2.5, shape="linear"),
                     legendgroup=algo,
                     showlegend=(col_idx == 1),
                     connectgaps=False,
@@ -824,17 +837,32 @@ def age_gender_sensitivity_line_chart(ag_df: pd.DataFrame) -> go.Figure:
                 row=1,
                 col=col_idx,
             )
+            if pd.notna(mean_sens):
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_categories,
+                        y=[mean_sens] * len(x_categories),
+                        mode="lines",
+                        name=f"{algo} mean ({mean_sens:.1f}%)",
+                        line=dict(color=color, width=2, dash="dash"),
+                        legendgroup=algo,
+                        showlegend=(col_idx == 1),
+                        hovertemplate=f"{algo} overall mean<br>Sensitivity: {mean_sens:.1f}%<extra></extra>",
+                    ),
+                    row=1,
+                    col=col_idx,
+                )
     fig.update_layout(
         title="Sensitivity by Age Group and Gender",
         height=420,
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=1.12,
+            y=1.14,
             xanchor="center",
             x=0.5,
         ),
-        margin=dict(t=100, b=80, l=50, r=20),
+        margin=dict(t=110, b=80, l=50, r=20),
     )
     fig.update_yaxes(title_text="Sensitivity (%)", range=[0, 100], row=1, col=1)
     fig.update_yaxes(range=[0, 100], row=1, col=2)
@@ -1405,7 +1433,7 @@ with tab3:
     ag_fine_df = compute_age_gender_fine_df(filtered_df)
     st.dataframe(ag_fine_df, use_container_width=True, hide_index=True)
     st.plotly_chart(
-        age_gender_sensitivity_line_chart(ag_fine_df),
+        age_gender_sensitivity_line_chart(ag_fine_df, filtered_df),
         use_container_width=True,
     )
 
