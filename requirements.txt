@@ -5,3 +5,8 @@ plotly
 openpyxl
 matplotlib
 matplotlib-venn
+jupyter
+ipykernel
+nbformat
+nbconvert
+ipython
