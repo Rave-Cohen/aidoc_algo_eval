@@ -30,6 +30,37 @@ DEPT_ALGO_COLORS = {
 }
 DEPT_LINE_DASH = {"ED": "solid", "IN": "dash"}
 
+RADAR_BG = "#1a1a2e"
+
+
+def label_bar_traces(
+    fig: go.Figure,
+    *,
+    horizontal: bool = False,
+    as_percent: bool = False,
+    decimals: int = 1,
+    textposition: str = "outside",
+) -> go.Figure:
+    for trace in fig.data:
+        if trace.type != "bar":
+            continue
+        vals = trace.x if horizontal else trace.y
+        if vals is None:
+            continue
+        labels = []
+        for val in vals:
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                labels.append("")
+            elif as_percent:
+                labels.append(f"{float(val):.{decimals}f}%")
+            elif decimals == 0 or float(val).is_integer():
+                labels.append(f"{int(round(float(val))):,}")
+            else:
+                labels.append(f"{float(val):.{decimals}f}")
+        trace.text = labels
+        trace.textposition = textposition
+    return fig
+
 FINE_AGE_EDGES = [
     5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41, 44, 47, 50, 53, 56,
     59, 62, 65, 68, 71, 74, 77, 80, 83, np.inf,
@@ -596,7 +627,8 @@ def tat_win_count_chart(duration_df: pd.DataFrame) -> go.Figure:
                 y=[matchup], x=[a_wins / total * 100],
                 orientation="h",
                 marker_color=COLOR_MAP.get(name_a, "#636363"),
-                text=[f"{name_a}: {a_wins:,}"], textposition="inside",
+                text=[f"{name_a}: {a_wins:,} ({a_wins / total * 100:.1f}%)"],
+                textposition="inside",
                 showlegend=False,
                 hovertemplate=f"{name_a} faster: {a_wins:,} ({a_wins / total * 100:.1f}%)<extra></extra>",
             )
@@ -606,7 +638,8 @@ def tat_win_count_chart(duration_df: pd.DataFrame) -> go.Figure:
                 y=[matchup], x=[b_wins / total * 100],
                 orientation="h",
                 marker_color=COLOR_MAP.get(name_b, "#636363"),
-                text=[f"{name_b}: {b_wins:,}"], textposition="inside",
+                text=[f"{name_b}: {b_wins:,} ({b_wins / total * 100:.1f}%)"],
+                textposition="inside",
                 showlegend=False,
                 hovertemplate=f"{name_b} faster: {b_wins:,} ({b_wins / total * 100:.1f}%)<extra></extra>",
             )
@@ -649,11 +682,14 @@ def tat_clinical_gap_chart(
             "Pct": f"{within_threshold / len(diff) * 100:.1f}%",
         },
     ])
+    clinical["Label"] = clinical.apply(
+        lambda r: f"{int(r['Count']):,}<br>{r['Pct']}", axis=1
+    )
     fig = px.bar(
         clinical,
         x="Category",
         y="Count",
-        text="Pct",
+        text="Label",
         title=f"Clinical Threshold: TAT Gap > {threshold} min (Radiologist vs Algo 3)",
         color="Category",
         color_discrete_map={
@@ -681,6 +717,9 @@ def hourly_scans_rad_chart(
                 x=sub["hour"], y=sub["scans"],
                 name=f"{group} scans",
                 marker_color=color, opacity=0.5,
+                text=[f"{int(v):,}" for v in sub["scans"]],
+                textposition="outside",
+                textfont=dict(size=9),
             ),
             secondary_y=False,
         )
@@ -726,6 +765,9 @@ def hourly_scans_algo_chart(
                 name=f"{dept} scans",
                 marker_color=dept_color,
                 opacity=0.35,
+                text=[f"{int(v):,}" for v in sub["scans"]],
+                textposition="outside",
+                textfont=dict(size=9),
                 legendgroup=f"{dept}-bars",
             ),
             secondary_y=False,
@@ -791,8 +833,25 @@ def diagnostic_radar_chart(metrics_df: pd.DataFrame) -> go.Figure:
             )
         )
     fig.update_layout(
-        title="Diagnostic Profile",
-        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+        title=dict(text="Diagnostic Profile", font=dict(color="#f5f5f5")),
+        paper_bgcolor=RADAR_BG,
+        plot_bgcolor=RADAR_BG,
+        font=dict(color="#f5f5f5"),
+        polar=dict(
+            bgcolor=RADAR_BG,
+            radialaxis=dict(
+                visible=True,
+                range=[0, 100],
+                gridcolor="#4a4a6a",
+                linecolor="#8888aa",
+                tickfont=dict(color="#f5f5f5", size=9),
+            ),
+            angularaxis=dict(
+                gridcolor="#4a4a6a",
+                linecolor="#8888aa",
+                tickfont=dict(color="#f5f5f5", size=9),
+            ),
+        ),
         showlegend=True,
         legend=dict(
             orientation="v",
@@ -800,7 +859,8 @@ def diagnostic_radar_chart(metrics_df: pd.DataFrame) -> go.Figure:
             y=0.5,
             xanchor="left",
             x=1.08,
-            font=dict(size=10),
+            font=dict(size=10, color="#f5f5f5"),
+            bgcolor="rgba(0,0,0,0)",
         ),
         height=320,
         margin=dict(t=50, b=20, l=40, r=110),
@@ -818,7 +878,7 @@ def confusion_matrices_chart(metrics_df: pd.DataFrame) -> go.Figure:
         rows=1,
         cols=3,
         subplot_titles=list(metrics_df["Algorithm"]),
-        horizontal_spacing=0.06,
+        horizontal_spacing=0.12,
     )
     for i, row in metrics_df.iterrows():
         tp, tn, fp, fn = int(row["TP"]), int(row["TN"]), int(row["FP"]), int(row["FN"])
@@ -831,21 +891,39 @@ def confusion_matrices_chart(metrics_df: pd.DataFrame) -> go.Figure:
         fig.add_trace(
             go.Heatmap(
                 z=cm,
-                x=["Predicted N", "Predicted P"],
-                y=["Actual N", "Actual P"],
+                x=["N", "P"],
+                y=["N", "P"],
                 text=text,
                 texttemplate="%{text}",
                 colorscale=[[0, "#f0fdf4"], [0.5, "#86efac"], [1, "#15803d"]],
                 showscale=(i == len(metrics_df) - 1),
                 hovertemplate="%{text}<extra></extra>",
+                xgap=2,
+                ygap=2,
             ),
             row=1,
             col=i + 1,
         )
+
+    for col in (1, 2, 3):
+        fig.update_xaxes(
+            title_text="Predicted" if col == 2 else "",
+            title_standoff=8,
+            row=1,
+            col=col,
+        )
+        fig.update_yaxes(
+            title_text="Actual" if col == 1 else "",
+            title_standoff=8,
+            showticklabels=(col == 1),
+            row=1,
+            col=col,
+        )
+
     fig.update_layout(
         title="Confusion Matrices",
-        height=340,
-        margin=dict(t=60, b=30, r=40),
+        height=380,
+        margin=dict(t=60, b=55, l=70, r=50),
     )
     return fig
 
@@ -882,10 +960,9 @@ def npv_chart(metrics_df: pd.DataFrame) -> go.Figure:
         text=metrics_df["NPV (%)"].map(lambda v: f"{v:.2f}%"),
     )
     fig.update_traces(textposition="outside")
-    y_min = max(0, metrics_df["NPV (%)"].min() - 1)
     fig.update_layout(
         showlegend=False,
-        yaxis=dict(range=[y_min, 100], title="NPV (%)"),
+        yaxis=dict(range=[0, 100], title="NPV (%)"),
         xaxis_title="",
         height=350,
         margin=dict(t=50, b=40),
@@ -1083,7 +1160,9 @@ def accuracy_bar(df: pd.DataFrame, group_col: str, title: str) -> go.Figure:
         title=title,
         color_discrete_map=COLOR_MAP,
         labels={group_col: group_col.replace("_", " ").title()},
+        text=long["Accuracy (%)"].map(lambda v: f"{v:.1f}%"),
     )
+    fig.update_traces(textposition="outside")
     fig.update_layout(legend_title_text="", yaxis_title="")
     return fig
 
@@ -1102,6 +1181,9 @@ def age_subgroup_chart(age_df: pd.DataFrame) -> go.Figure:
             y=age_df["scans"],
             name="Scan count",
             marker_color="rgba(128, 128, 128, 0.25)",
+            text=[f"{int(v):,}" for v in age_df["scans"]],
+            textposition="outside",
+            textfont=dict(size=9, color="#666"),
             hovertemplate="Age %{x}<br>Scans: %{y:,}<extra></extra>",
         ),
         secondary_y=True,
@@ -1284,6 +1366,9 @@ with tab1:
     fig_tvm = go.Figure(go.Bar(
         x=hourly_total_overall["hour"], y=hourly_total_overall["scans"],
         marker_color="#6a994e", name="All scans",
+        text=[f"{int(v):,}" for v in hourly_total_overall["scans"]],
+        textposition="outside",
+        textfont=dict(size=9),
     ))
     mean_val = hourly_total_overall["scans"].mean()
     fig_tvm.add_hline(
@@ -1609,6 +1694,8 @@ with tab3:
         title="Accuracy (%) by Hospital Site",
         color_discrete_map=COLOR_MAP,
         labels={"site": "Hospital Site"},
+        text=site_long["Accuracy (%)"].map(lambda v: f"{v:.1f}%"),
     )
+    fig_site.update_traces(textposition="outside")
     fig_site.update_layout(legend_title_text="")
     st.plotly_chart(fig_site, use_container_width=True)
