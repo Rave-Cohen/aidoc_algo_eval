@@ -794,6 +794,63 @@ def diagnostic_radar_chart(metrics_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def age_gender_sensitivity_line_chart(ag_df: pd.DataFrame) -> go.Figure:
+    x_categories = [str(label) for label in FINE_AGE_LABELS]
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=["Male", "Female"],
+        shared_yaxes=True,
+    )
+    for col_idx, gender in enumerate(["male", "female"], start=1):
+        sub = ag_df[ag_df["gender"] == gender].sort_values("age_group")
+        for algo in ALGO_COLS:
+            col_name = f"{algo} Sens"
+            fig.add_trace(
+                go.Scatter(
+                    x=sub["age_group"].astype(str),
+                    y=sub[col_name],
+                    mode="lines+markers",
+                    name=algo,
+                    line=dict(color=COLOR_MAP[algo], width=3, shape="linear"),
+                    marker=dict(color=COLOR_MAP[algo], size=8, line=dict(width=1, color="white")),
+                    legendgroup=algo,
+                    showlegend=(col_idx == 1),
+                    connectgaps=False,
+                    hovertemplate=(
+                        f"{algo}<br>Age %{{x}}<br>Sensitivity: %{{y:.1f}}%<extra></extra>"
+                    ),
+                ),
+                row=1,
+                col=col_idx,
+            )
+    fig.update_layout(
+        title="Sensitivity by Age Group and Gender",
+        height=420,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.12,
+            xanchor="center",
+            x=0.5,
+        ),
+        margin=dict(t=100, b=80, l=50, r=20),
+    )
+    fig.update_yaxes(title_text="Sensitivity (%)", range=[0, 100], row=1, col=1)
+    fig.update_yaxes(range=[0, 100], row=1, col=2)
+    for col_idx in (1, 2):
+        fig.update_xaxes(
+            title_text="Age group (years)",
+            type="category",
+            categoryorder="array",
+            categoryarray=x_categories,
+            tickangle=-45,
+            row=1,
+            col=col_idx,
+        )
+    return fig
+
+
 def age_gender_metric_chart(
     ag_df: pd.DataFrame,
     metric_suffix: str,
@@ -1348,9 +1405,7 @@ with tab3:
     ag_fine_df = compute_age_gender_fine_df(filtered_df)
     st.dataframe(ag_fine_df, use_container_width=True, hide_index=True)
     st.plotly_chart(
-        age_gender_metric_chart(
-            ag_fine_df, "Sens", "Sensitivity (%)", "Sensitivity by Age Group and Gender"
-        ),
+        age_gender_sensitivity_line_chart(ag_fine_df),
         use_container_width=True,
     )
 
