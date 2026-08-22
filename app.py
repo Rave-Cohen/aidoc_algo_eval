@@ -1406,7 +1406,7 @@ with tab3:
     metrics_df = compute_metrics_df(filtered_df)
     metrics_table_col, metrics_chart_col = st.columns([1.35, 1], gap="medium")
     with metrics_table_col:
-        st.dataframe(metrics_df, use_container_width=True, hide_index=True, height=260)
+        st.dataframe(metrics_df, use_container_width=True, hide_index=True)
     with metrics_chart_col:
         st.plotly_chart(
             diagnostic_radar_chart(metrics_df),
