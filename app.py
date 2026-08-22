@@ -289,6 +289,12 @@ def compute_metrics_df(df: pd.DataFrame) -> pd.DataFrame:
         tn = int(((df[col] == "N") & (df["radiologist_answer"] == "N")).sum())
         fp = int(((df[col] == "P") & (df["radiologist_answer"] == "N")).sum())
         fn = int(((df[col] == "N") & (df["radiologist_answer"] == "P")).sum())
+        n = tp + tn + fp + fn
+        f1 = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) else np.nan
+        npv = tn / (tn + fn) if (tn + fn) else np.nan
+        miss_rate = fn / (fn + tp) if (fn + tp) else np.nan
+        fall_out = fp / (fp + tn) if (fp + tn) else np.nan
+        fdr = fp / (fp + tp) if (fp + tp) else np.nan
         rows.append(
             {
                 "Algorithm": name,
@@ -298,10 +304,13 @@ def compute_metrics_df(df: pd.DataFrame) -> pd.DataFrame:
                 "FN": fn,
                 "Sensitivity (%)": round(tp / (tp + fn) * 100, 2) if (tp + fn) else np.nan,
                 "Specificity (%)": round(tn / (tn + fp) * 100, 2) if (tn + fp) else np.nan,
-                "Precision (%)": round(tp / (tp + fp) * 100, 2) if (tp + fp) else np.nan,
-                "Accuracy (%)": round((tp + tn) / (tp + tn + fp + fn) * 100, 2)
-                if (tp + tn + fp + fn)
-                else np.nan,
+                "Precision / PPV (%)": round(tp / (tp + fp) * 100, 2) if (tp + fp) else np.nan,
+                "NPV (%)": round(npv * 100, 2) if pd.notna(npv) else np.nan,
+                "Accuracy (%)": round((tp + tn) / n * 100, 2) if n else np.nan,
+                "F1-Score": round(f1, 4) if pd.notna(f1) else np.nan,
+                "Miss Rate / FNR (%)": round(miss_rate * 100, 2) if pd.notna(miss_rate) else np.nan,
+                "Fall-Out / FPR (%)": round(fall_out * 100, 2) if pd.notna(fall_out) else np.nan,
+                "FDR (%)": round(fdr * 100, 2) if pd.notna(fdr) else np.nan,
             }
         )
     return pd.DataFrame(rows)
@@ -761,7 +770,12 @@ def hourly_scans_algo_chart(
 
 
 def diagnostic_radar_chart(metrics_df: pd.DataFrame) -> go.Figure:
-    radar_metrics = ["Sensitivity (%)", "Specificity (%)", "Precision (%)", "Accuracy (%)"]
+    radar_metrics = [
+        "Sensitivity (%)",
+        "Specificity (%)",
+        "Precision / PPV (%)",
+        "Accuracy (%)",
+    ]
     fig = go.Figure()
     for _, row in metrics_df.iterrows():
         values = [row[m] for m in radar_metrics]
@@ -790,6 +804,120 @@ def diagnostic_radar_chart(metrics_df: pd.DataFrame) -> go.Figure:
         ),
         height=320,
         margin=dict(t=50, b=20, l=40, r=110),
+    )
+    return fig
+
+
+def _cm_cell_text(label: str, count: int, total: int) -> str:
+    pct = count / total * 100 if total else 0
+    return f"{label}<br>{count:,}<br>({pct:.1f}%)"
+
+
+def confusion_matrices_chart(metrics_df: pd.DataFrame) -> go.Figure:
+    fig = make_subplots(
+        rows=1,
+        cols=3,
+        subplot_titles=list(metrics_df["Algorithm"]),
+        horizontal_spacing=0.06,
+    )
+    for i, row in metrics_df.iterrows():
+        tp, tn, fp, fn = int(row["TP"]), int(row["TN"]), int(row["FP"]), int(row["FN"])
+        total = tp + tn + fp + fn
+        cm = [[tn, fp], [fn, tp]]
+        text = [
+            [_cm_cell_text("TN", tn, total), _cm_cell_text("FP", fp, total)],
+            [_cm_cell_text("FN", fn, total), _cm_cell_text("TP", tp, total)],
+        ]
+        fig.add_trace(
+            go.Heatmap(
+                z=cm,
+                x=["Predicted N", "Predicted P"],
+                y=["Actual N", "Actual P"],
+                text=text,
+                texttemplate="%{text}",
+                colorscale=[[0, "#f0fdf4"], [0.5, "#86efac"], [1, "#15803d"]],
+                showscale=(i == len(metrics_df) - 1),
+                hovertemplate="%{text}<extra></extra>",
+            ),
+            row=1,
+            col=i + 1,
+        )
+    fig.update_layout(
+        title="Confusion Matrices",
+        height=340,
+        margin=dict(t=60, b=30, r=40),
+    )
+    return fig
+
+
+def f1_score_chart(metrics_df: pd.DataFrame) -> go.Figure:
+    fig = px.bar(
+        metrics_df,
+        x="Algorithm",
+        y="F1-Score",
+        color="Algorithm",
+        color_discrete_map=COLOR_MAP,
+        title="F1-Score per Algorithm",
+        text=metrics_df["F1-Score"].map(lambda v: f"{v:.4f}"),
+    )
+    fig.update_traces(textposition="outside")
+    fig.update_layout(
+        showlegend=False,
+        yaxis=dict(range=[0, 1], title="F1-Score"),
+        xaxis_title="",
+        height=350,
+        margin=dict(t=50, b=40),
+    )
+    return fig
+
+
+def npv_chart(metrics_df: pd.DataFrame) -> go.Figure:
+    fig = px.bar(
+        metrics_df,
+        x="Algorithm",
+        y="NPV (%)",
+        color="Algorithm",
+        color_discrete_map=COLOR_MAP,
+        title="NPV per Algorithm",
+        text=metrics_df["NPV (%)"].map(lambda v: f"{v:.2f}%"),
+    )
+    fig.update_traces(textposition="outside")
+    y_min = max(0, metrics_df["NPV (%)"].min() - 1)
+    fig.update_layout(
+        showlegend=False,
+        yaxis=dict(range=[y_min, 100], title="NPV (%)"),
+        xaxis_title="",
+        height=350,
+        margin=dict(t=50, b=40),
+    )
+    return fig
+
+
+def error_rate_chart(metrics_df: pd.DataFrame) -> go.Figure:
+    rate_cols = ["Miss Rate / FNR (%)", "Fall-Out / FPR (%)", "FDR (%)"]
+    long = metrics_df.melt(
+        id_vars="Algorithm",
+        value_vars=rate_cols,
+        var_name="Metric",
+        value_name="Rate (%)",
+    )
+    fig = px.bar(
+        long,
+        x="Metric",
+        y="Rate (%)",
+        color="Algorithm",
+        barmode="group",
+        color_discrete_map=COLOR_MAP,
+        title="Error Rate Metrics (lower = better)",
+        text="Rate (%)",
+    )
+    fig.update_traces(texttemplate="%{text:.2f}%", textposition="outside")
+    fig.update_layout(
+        height=400,
+        xaxis_title="",
+        yaxis_title="Rate (%)",
+        legend_title_text="",
+        margin=dict(t=60, b=40),
     )
     return fig
 
@@ -1404,14 +1532,28 @@ with tab3:
     )
 
     metrics_df = compute_metrics_df(filtered_df)
-    metrics_table_col, metrics_chart_col = st.columns([1.35, 1], gap="medium")
-    with metrics_table_col:
-        st.dataframe(metrics_df, use_container_width=True, hide_index=True)
-    with metrics_chart_col:
+
+    cm_col, radar_col = st.columns([1.2, 1], gap="medium")
+    with cm_col:
+        st.plotly_chart(
+            confusion_matrices_chart(metrics_df),
+            use_container_width=True,
+        )
+    with radar_col:
         st.plotly_chart(
             diagnostic_radar_chart(metrics_df),
             use_container_width=True,
         )
+
+    st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+
+    f1_col, npv_col = st.columns(2, gap="medium")
+    with f1_col:
+        st.plotly_chart(f1_score_chart(metrics_df), use_container_width=True)
+    with npv_col:
+        st.plotly_chart(npv_chart(metrics_df), use_container_width=True)
+
+    st.plotly_chart(error_rate_chart(metrics_df), use_container_width=True)
 
     st.divider()
     st.subheader("Age Subgroups")
