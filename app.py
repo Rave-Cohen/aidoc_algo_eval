@@ -1,4 +1,3 @@
-import duckdb
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -19,85 +18,327 @@ COLOR_MAP = {
 }
 ALGO_COLS = ["Algo 1", "Algo 2", "Algo 3"]
 AGE_LINE_COLS = ["Radiologist", "Algo 1", "Algo 2", "Algo 3"]
+ALGO_ANSWER_COLS = ["algo1_answer", "algo2_answer", "algo3_answer"]
 
-AGE_QUERY = """
-WITH binned AS (
-    SELECT *,
-        CASE
-            WHEN age < 3 THEN '00-03' WHEN age < 6 THEN '03-06' WHEN age < 9 THEN '06-09'
-            WHEN age < 12 THEN '09-12' WHEN age < 15 THEN '12-15' WHEN age < 18 THEN '15-18'
-            WHEN age < 21 THEN '18-21' WHEN age < 24 THEN '21-24' WHEN age < 27 THEN '24-27'
-            WHEN age < 30 THEN '27-30' WHEN age < 32 THEN '30-32' WHEN age < 37 THEN '32-37'
-            WHEN age < 42 THEN '37-42' WHEN age < 47 THEN '42-47' WHEN age < 52 THEN '47-52'
-            WHEN age < 57 THEN '52-57' WHEN age < 62 THEN '57-62' WHEN age < 67 THEN '62-67'
-            WHEN age < 70 THEN '67-70' WHEN age < 73 THEN '70-73' WHEN age < 76 THEN '73-76'
-            WHEN age < 79 THEN '76-79' WHEN age < 82 THEN '79-82' ELSE '82+'
-        END AS age_group,
-        CASE WHEN algo1_answer = radiologist_answer THEN 1 ELSE 0 END AS a1_corr,
-        CASE WHEN algo2_answer = radiologist_answer THEN 1 ELSE 0 END AS a2_corr,
-        CASE WHEN algo3_answer = radiologist_answer THEN 1 ELSE 0 END AS a3_corr
-    FROM filtered_df
-)
-SELECT
-    age_group,
-    COUNT(*) AS scans,
-    ROUND(AVG(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END) * 100, 1) AS "Radiologist",
-    ROUND(AVG(a1_corr) * 100, 1) AS "Algo 1",
-    ROUND(AVG(a2_corr) * 100, 1) AS "Algo 2",
-    ROUND(AVG(a3_corr) * 100, 1) AS "Algo 3"
-FROM binned
-GROUP BY age_group
-ORDER BY age_group
-"""
-
-
-def group_distribution_query(group_col: str) -> str:
-    return f"""
-    SELECT
-        {group_col},
-        COUNT(*) AS scans,
-        SUM(CASE WHEN radiologist_answer = 'P' THEN 1 ELSE 0 END) AS positives,
-        ROUND(
-            SUM(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END)
-            / COUNT(*) * 100, 1
-        ) AS prevalence_pct
-    FROM filtered_df
-    GROUP BY {group_col}
-    ORDER BY {group_col}
-    """
-
-
-def group_accuracy_query(group_col: str) -> str:
-    return f"""
-    SELECT
-        {group_col},
-        COUNT(*) AS scans,
-        SUM(CASE WHEN radiologist_answer = 'P' THEN 1 ELSE 0 END) AS positives,
-        ROUND(
-            SUM(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END)
-            / COUNT(*) * 100, 1
-        ) AS prevalence_pct,
-        ROUND(AVG(CASE WHEN algo1_answer = radiologist_answer THEN 1.0 ELSE 0.0 END) * 100, 1) AS "Algo 1",
-        ROUND(AVG(CASE WHEN algo2_answer = radiologist_answer THEN 1.0 ELSE 0.0 END) * 100, 1) AS "Algo 2",
-        ROUND(AVG(CASE WHEN algo3_answer = radiologist_answer THEN 1.0 ELSE 0.0 END) * 100, 1) AS "Algo 3"
-    FROM filtered_df
-    GROUP BY {group_col}
-    ORDER BY {group_col}
-    """
-
-
-AGE_GROUP_BIN = """
-    CASE
-        WHEN age < 18 THEN '00-17'
-        WHEN age < 40 THEN '18-39'
-        WHEN age < 65 THEN '40-64'
-        ELSE '65+'
-    END AS age_group
-"""
 AGE_GROUP_ORDER = ["00-17", "18-39", "40-64", "65+"]
 PATIENT_CLASS_ORDER = ["ED", "IN"]
 GENDER_COLOR_MAP = {"male": "#2a9d8f", "female": "#bc4749"}
 DEPT_COLOR_MAP = {"ED": "#bc4749", "IN": "#2a9d8f"}
+
+FINE_AGE_EDGES = [
+    -np.inf, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 32, 37, 42, 47, 52, 57, 62,
+    67, 70, 73, 76, 79, 82, np.inf,
+]
+FINE_AGE_LABELS = [
+    "00-03", "03-06", "06-09", "09-12", "12-15", "15-18", "18-21", "21-24",
+    "24-27", "27-30", "30-32", "32-37", "37-42", "42-47", "47-52", "52-57",
+    "57-62", "62-67", "67-70", "70-73", "73-76", "76-79", "79-82", "82+",
+]
+
+MONTH_LABELS = {
+    1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
+    7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec",
+}
+DOW_LABELS = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+
+
+def assign_age_group_series(ages: pd.Series) -> pd.Series:
+    return pd.Series(
+        np.select(
+            [ages < 18, ages < 40, ages < 65],
+            ["00-17", "18-39", "40-64"],
+            default="65+",
+        ),
+        index=ages.index,
+    )
+
+
+def filter_dataframe(
+    df: pd.DataFrame,
+    sites: list,
+    patient_classes: list,
+    genders: list,
+    age_lo: int,
+    age_hi: int,
+) -> pd.DataFrame:
+    return df[
+        df["site"].isin(sites)
+        & df["patient_class"].isin(patient_classes)
+        & df["gender"].isin(genders)
+        & (df["age"] >= age_lo)
+        & (df["age"] <= age_hi)
+    ].copy()
+
+
+def group_distribution_df(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
+    out = (
+        df.groupby(group_col, as_index=False)
+        .agg(
+            scans=("radiologist_answer", "count"),
+            positives=("radiologist_answer", lambda s: (s == "P").sum()),
+        )
+        .assign(
+            prevalence_pct=lambda d: (d["positives"] / d["scans"] * 100).round(1)
+        )
+        .sort_values(group_col)
+    )
+    return out
+
+
+def group_accuracy_df(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
+    out = group_distribution_df(df, group_col)
+    for name, col in zip(ALGO_COLS, ALGO_ANSWER_COLS):
+        out[name] = (
+            df.groupby(group_col)
+            .apply(lambda g, c=col: (g[c] == g["radiologist_answer"]).mean() * 100)
+            .round(1)
+            .values
+        )
+    return out
+
+
+def volume_sunburst_df(df: pd.DataFrame) -> pd.DataFrame:
+    return (
+        df.groupby(["site", "patient_class", "gender"], as_index=False)
+        .agg(
+            scans=("radiologist_answer", "count"),
+            positives=("radiologist_answer", lambda s: (s == "P").sum()),
+        )
+        .assign(
+            prevalence_pct=lambda d: (d["positives"] / d["scans"] * 100).round(1)
+        )
+        .sort_values(["site", "patient_class", "gender"])
+    )
+
+
+def age_prevalence_sunburst_df(df: pd.DataFrame) -> pd.DataFrame:
+    binned = df.assign(age_group=assign_age_group_series(df["age"]))
+    out = (
+        binned.groupby(["patient_class", "age_group"], as_index=False)
+        .agg(
+            scans=("radiologist_answer", "count"),
+            positives=("radiologist_answer", lambda s: (s == "P").sum()),
+        )
+        .assign(
+            prevalence_pct=lambda d: (d["positives"] / d["scans"] * 100).round(1)
+        )
+    )
+    out["patient_class"] = pd.Categorical(
+        out["patient_class"], categories=PATIENT_CLASS_ORDER, ordered=True
+    )
+    out["age_group"] = pd.Categorical(
+        out["age_group"], categories=AGE_GROUP_ORDER, ordered=True
+    )
+    return out.sort_values(["patient_class", "age_group"])
+
+
+def build_temporal_base(df: pd.DataFrame) -> pd.DataFrame:
+    base = df[df["scan_timestamp"].notna()].copy()
+    base["hour"] = base["scan_timestamp"].dt.hour.astype(int)
+    base["dow"] = base["scan_timestamp"].dt.dayofweek.astype(int)
+    base["month"] = base["scan_timestamp"].dt.month.astype(int)
+    return base
+
+
+def hourly_total_scans(temporal_base: pd.DataFrame) -> pd.DataFrame:
+    return (
+        temporal_base.groupby("hour", as_index=False)
+        .agg(scans=("radiologist_answer", "count"))
+        .sort_values("hour")
+    )
+
+
+def hourly_pos_rate(temporal_base: pd.DataFrame) -> pd.DataFrame:
+    return (
+        temporal_base.groupby("hour", as_index=False)
+        .agg(pos_rate=("radiologist_answer", lambda s: round((s == "P").mean() * 100, 1)))
+        .sort_values("hour")
+    )
+
+
+def monthly_pos_rate(temporal_base: pd.DataFrame) -> pd.DataFrame:
+    out = (
+        temporal_base.groupby("month", as_index=False)
+        .agg(pos_rate=("radiologist_answer", lambda s: round((s == "P").mean() * 100, 1)))
+        .sort_values("month")
+    )
+    out["month_name"] = out["month"].map(MONTH_LABELS)
+    return out
+
+
+def heatmap_data(temporal_base: pd.DataFrame) -> pd.DataFrame:
+    return (
+        temporal_base.groupby(["dow", "hour"], as_index=False)
+        .agg(
+            scans=("radiologist_answer", "count"),
+            pos_rate=("radiologist_answer", lambda s: round((s == "P").mean() * 100, 1)),
+        )
+        .sort_values(["dow", "hour"])
+    )
+
+
+def count_with_times(df: pd.DataFrame) -> int:
+    required = [
+        "radiologist_sign_time",
+        "algos_start_run",
+        "algo1_finish_run",
+        "algo2_finish_run",
+        "algo3_finish_run",
+    ]
+    return int(df[required].notna().all(axis=1).sum())
+
+
+def compute_duration_df(df: pd.DataFrame) -> pd.DataFrame:
+    required = [
+        "radiologist_sign_time",
+        "algos_start_run",
+        "algo1_finish_run",
+        "algo2_finish_run",
+        "algo3_finish_run",
+    ]
+    sub = df[df[required].notna().all(axis=1)].copy()
+    duration_df = pd.DataFrame(
+        {
+            "Radiologist": (
+                sub["radiologist_sign_time"] - sub["algos_start_run"]
+            ).dt.total_seconds()
+            / 60.0,
+            "Algo 1": (
+                sub["algo1_finish_run"] - sub["algos_start_run"]
+            ).dt.total_seconds()
+            / 60.0,
+            "Algo 2": (
+                sub["algo2_finish_run"] - sub["algos_start_run"]
+            ).dt.total_seconds()
+            / 60.0,
+            "Algo 3": (
+                sub["algo3_finish_run"] - sub["algos_start_run"]
+            ).dt.total_seconds()
+            / 60.0,
+        }
+    )
+    valid = (duration_df >= 0).all(axis=1)
+    return duration_df.loc[valid]
+
+
+def hourly_scans_rad_by_group(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
+    mask = (
+        df["scan_timestamp"].notna()
+        & df["radiologist_sign_time"].notna()
+        & df["algos_start_run"].notna()
+    )
+    sub = df.loc[mask].copy()
+    sub["hour"] = sub["scan_timestamp"].dt.hour.astype(int)
+    sub["rad_min"] = (
+        sub["radiologist_sign_time"] - sub["algos_start_run"]
+    ).dt.total_seconds() / 60.0
+    sub = sub[sub["rad_min"] >= 0]
+    return (
+        sub.groupby(["hour", group_col], as_index=False)
+        .agg(
+            scans=("radiologist_answer", "count"),
+            mean_rad_min=("rad_min", lambda s: round(s.mean(), 2)),
+        )
+        .sort_values(["hour", group_col])
+    )
+
+
+def compute_metrics_df(df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for name, col in zip(ALGO_COLS, ALGO_ANSWER_COLS):
+        tp = int(((df[col] == "P") & (df["radiologist_answer"] == "P")).sum())
+        tn = int(((df[col] == "N") & (df["radiologist_answer"] == "N")).sum())
+        fp = int(((df[col] == "P") & (df["radiologist_answer"] == "N")).sum())
+        fn = int(((df[col] == "N") & (df["radiologist_answer"] == "P")).sum())
+        rows.append(
+            {
+                "Algorithm": name,
+                "TP": tp,
+                "TN": tn,
+                "FP": fp,
+                "FN": fn,
+                "Sensitivity (%)": round(tp / (tp + fn) * 100, 2) if (tp + fn) else np.nan,
+                "Specificity (%)": round(tn / (tn + fp) * 100, 2) if (tn + fp) else np.nan,
+                "Precision (%)": round(tp / (tp + fp) * 100, 2) if (tp + fp) else np.nan,
+                "Accuracy (%)": round((tp + tn) / (tp + tn + fp + fn) * 100, 2)
+                if (tp + tn + fp + fn)
+                else np.nan,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def compute_age_gender_df(df: pd.DataFrame) -> pd.DataFrame:
+    binned = df.assign(age_group=assign_age_group_series(df["age"]))
+    rows = []
+    for (age_group, gender), grp in binned.groupby(["age_group", "gender"], sort=False):
+        scans = len(grp)
+        positives = int((grp["radiologist_answer"] == "P").sum())
+        gt_pos = grp[grp["radiologist_answer"] == "P"]
+        row = {
+            "age_group": age_group,
+            "gender": gender,
+            "scans": scans,
+            "positives": positives,
+            "prevalence_pct": round(positives / scans * 100, 1),
+        }
+        for name, col in zip(ALGO_COLS, ALGO_ANSWER_COLS):
+            row[f"{name} Acc"] = round((grp[col] == grp["radiologist_answer"]).mean() * 100, 1)
+            row[f"{name} Sens"] = (
+                round((gt_pos[col] == "P").mean() * 100, 1) if len(gt_pos) else np.nan
+            )
+        rows.append(row)
+    out = pd.DataFrame(rows)
+    out["age_group"] = pd.Categorical(
+        out["age_group"], categories=AGE_GROUP_ORDER, ordered=True
+    )
+    return out.sort_values(["age_group", "gender"])
+
+
+def site_accuracy_df(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.groupby("site", as_index=False).agg(
+        scans=("radiologist_answer", "count")
+    )
+    for name, col in zip(ALGO_COLS, ALGO_ANSWER_COLS):
+        out[name] = (
+            df.groupby("site")
+            .apply(lambda g, c=col: (g[c] == g["radiologist_answer"]).mean() * 100)
+            .round(1)
+            .values
+        )
+    return out.sort_values("site")
+
+
+def compute_age_subgroup_df(df: pd.DataFrame) -> pd.DataFrame:
+    binned = df.assign(
+        age_group=pd.cut(
+            df["age"],
+            bins=FINE_AGE_EDGES,
+            labels=FINE_AGE_LABELS,
+            right=False,
+        )
+    )
+    binned = binned[binned["age_group"].notna()].copy()
+    for i, col in enumerate(ALGO_ANSWER_COLS, 1):
+        binned[f"a{i}_corr"] = (
+            binned[col] == binned["radiologist_answer"]
+        ).astype(int)
+    out = (
+        binned.groupby("age_group", as_index=False, observed=False)
+        .agg(
+            scans=("radiologist_answer", "count"),
+            Radiologist=(
+                "radiologist_answer",
+                lambda s: round((s == "P").mean() * 100, 1),
+            ),
+            **{
+                name: (f"a{i}_corr", lambda s: round(s.mean() * 100, 1))
+                for i, name in enumerate(ALGO_COLS, 1)
+            },
+        )
+        .sort_values("age_group")
+    )
+    return out
 
 
 def prevalence_sunburst(
@@ -265,9 +506,8 @@ def tat_win_count_chart(duration_df: pd.DataFrame) -> go.Figure:
     ]
     fig = go.Figure()
     for name_a, name_b in pairs:
-        col_a, col_b = name_a, name_b
-        a_wins = int((duration_df[col_a] < duration_df[col_b]).sum())
-        b_wins = int((duration_df[col_a] > duration_df[col_b]).sum())
+        a_wins = int((duration_df[name_a] < duration_df[name_b]).sum())
+        b_wins = int((duration_df[name_a] > duration_df[name_b]).sum())
         total = len(duration_df)
         matchup = f"{name_a} vs {name_b}"
         fig.add_trace(
@@ -443,44 +683,6 @@ def age_subgroup_chart(age_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-AGE_GENDER_QUERY = """
-WITH binned AS (
-    SELECT *,
-        CASE
-            WHEN age < 18 THEN '00-17'
-            WHEN age < 40 THEN '18-39'
-            WHEN age < 65 THEN '40-64'
-            ELSE '65+'
-        END AS age_group
-    FROM filtered_df
-)
-SELECT
-    age_group,
-    gender,
-    COUNT(*) AS scans,
-    SUM(CASE WHEN radiologist_answer = 'P' THEN 1 ELSE 0 END) AS positives,
-    ROUND(AVG(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END) * 100, 1) AS prevalence_pct,
-    ROUND(AVG(CASE WHEN algo1_answer = radiologist_answer THEN 1.0 ELSE 0.0 END) * 100, 1) AS "Algo 1 Acc",
-    ROUND(AVG(CASE WHEN algo2_answer = radiologist_answer THEN 1.0 ELSE 0.0 END) * 100, 1) AS "Algo 2 Acc",
-    ROUND(AVG(CASE WHEN algo3_answer = radiologist_answer THEN 1.0 ELSE 0.0 END) * 100, 1) AS "Algo 3 Acc",
-    ROUND(
-        SUM(CASE WHEN algo1_answer = 'P' AND radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END)
-        / NULLIF(SUM(CASE WHEN radiologist_answer = 'P' THEN 1 ELSE 0 END), 0) * 100, 1
-    ) AS "Algo 1 Sens",
-    ROUND(
-        SUM(CASE WHEN algo2_answer = 'P' AND radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END)
-        / NULLIF(SUM(CASE WHEN radiologist_answer = 'P' THEN 1 ELSE 0 END), 0) * 100, 1
-    ) AS "Algo 2 Sens",
-    ROUND(
-        SUM(CASE WHEN algo3_answer = 'P' AND radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END)
-        / NULLIF(SUM(CASE WHEN radiologist_answer = 'P' THEN 1 ELSE 0 END), 0) * 100, 1
-    ) AS "Algo 3 Sens"
-FROM binned
-GROUP BY age_group, gender
-ORDER BY age_group, gender
-"""
-
-
 @st.cache_data
 def load_data():
     file_path = "AI_data_analysis_exercise_(4)_(2)_(2)_(4).xlsx"
@@ -529,17 +731,7 @@ age_hi = age_col2.number_input("To", min_value=0, max_value=age_max, value=age_m
 if age_lo > age_hi:
     age_lo, age_hi = age_hi, age_lo
 
-filtered_df = duckdb.sql(
-    """
-    SELECT * FROM df
-    WHERE site IN list_transform(?, x -> x)
-      AND patient_class IN list_transform(?, x -> x)
-      AND gender IN list_transform(?, x -> x)
-      AND age >= ?
-      AND age <= ?
-    """,
-    params=[sites, patient_classes, genders, age_lo, age_hi],
-).df()
+filtered_df = filter_dataframe(df, sites, patient_classes, genders, age_lo, age_hi)
 
 total_scans = len(filtered_df)
 positives = int((filtered_df["radiologist_answer"] == "P").sum()) if total_scans else 0
@@ -567,40 +759,8 @@ with tab1:
         "Click the 🏠 **house icon** on a chart toolbar to reset zoom and view.",
         icon="💡",
     )
-    vol_query = """
-    SELECT site, patient_class, gender,
-           COUNT(*) AS scans,
-           SUM(CASE WHEN radiologist_answer = 'P' THEN 1 ELSE 0 END) AS positives,
-           ROUND(SUM(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END)
-                 / COUNT(*) * 100, 1) AS prevalence_pct
-    FROM filtered_df
-    GROUP BY site, patient_class, gender
-    ORDER BY site, patient_class, gender
-    """
-    vol_df = duckdb.sql(vol_query).df()
-
-    age_vol_query = f"""
-    WITH binned AS (
-        SELECT *, {AGE_GROUP_BIN}
-        FROM filtered_df
-    )
-    SELECT patient_class, age_group,
-           COUNT(*) AS scans,
-           SUM(CASE WHEN radiologist_answer = 'P' THEN 1 ELSE 0 END) AS positives,
-           ROUND(SUM(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END)
-                 / COUNT(*) * 100, 1) AS prevalence_pct
-    FROM binned
-    GROUP BY patient_class, age_group
-    ORDER BY patient_class, age_group
-    """
-    age_vol_df = duckdb.sql(age_vol_query).df()
-    age_vol_df["patient_class"] = pd.Categorical(
-        age_vol_df["patient_class"], categories=PATIENT_CLASS_ORDER, ordered=True
-    )
-    age_vol_df["age_group"] = pd.Categorical(
-        age_vol_df["age_group"], categories=AGE_GROUP_ORDER, ordered=True
-    )
-    age_vol_df = age_vol_df.sort_values(["patient_class", "age_group"])
+    vol_df = volume_sunburst_df(filtered_df)
+    age_vol_df = age_prevalence_sunburst_df(filtered_df)
 
     pie_col1, pie_col2 = st.columns(2, gap="medium")
     with pie_col1:
@@ -639,7 +799,7 @@ with tab1:
 
     st.divider()
     st.subheader("Gender")
-    gender_df = duckdb.sql(group_distribution_query("gender")).df()
+    gender_df = group_distribution_df(filtered_df, "gender")
 
     g_cols = st.columns(len(gender_df) if len(gender_df) else 1)
     for i, row in gender_df.iterrows():
@@ -661,27 +821,10 @@ with tab1:
     st.subheader("Commonness")
     st.markdown("Hourly, monthly, and weekly patterns of scan volume and positive rates.")
 
-    # ---- temporal base query ----
-    temporal_base = duckdb.sql("""
-    SELECT *,
-        EXTRACT(HOUR FROM scan_timestamp) AS hour,
-        EXTRACT(DOW FROM scan_timestamp) AS dow,
-        EXTRACT(MONTH FROM scan_timestamp) AS month
-    FROM filtered_df
-    WHERE scan_timestamp IS NOT NULL
-    """).df()
-
-    MONTH_LABELS = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
-                    7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"}
-    DOW_LABELS = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+    temporal_base = build_temporal_base(filtered_df)
 
     st.markdown("##### Hourly Total Scan Volume")
-    hourly_total_overall = duckdb.sql("""
-    SELECT CAST(hour AS INTEGER) AS hour,
-           COUNT(*) AS scans
-    FROM temporal_base
-    GROUP BY hour ORDER BY hour
-    """).df()
+    hourly_total_overall = hourly_total_scans(temporal_base)
 
     fig_tvm = go.Figure(go.Bar(
         x=hourly_total_overall["hour"], y=hourly_total_overall["scans"],
@@ -703,12 +846,7 @@ with tab1:
     )
 
     st.markdown("##### Hourly Positive Rate")
-    hourly_pos_overall = duckdb.sql("""
-    SELECT CAST(hour AS INTEGER) AS hour,
-           ROUND(SUM(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END) / COUNT(*) * 100, 1) AS pos_rate
-    FROM temporal_base
-    GROUP BY hour ORDER BY hour
-    """).df()
+    hourly_pos_overall = hourly_pos_rate(temporal_base)
 
     fig_prm = go.Figure(go.Scatter(
         x=hourly_pos_overall["hour"], y=hourly_pos_overall["pos_rate"],
@@ -733,13 +871,7 @@ with tab1:
     )
 
     st.markdown("##### Monthly Positive Rate")
-    monthly_pos_overall = duckdb.sql("""
-    SELECT CAST(month AS INTEGER) AS month,
-           ROUND(SUM(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END) / COUNT(*) * 100, 1) AS pos_rate
-    FROM temporal_base
-    GROUP BY month ORDER BY month
-    """).df()
-    monthly_pos_overall["month_name"] = monthly_pos_overall["month"].map(MONTH_LABELS)
+    monthly_pos_overall = monthly_pos_rate(temporal_base)
 
     fig_mpm = go.Figure(go.Scatter(
         x=monthly_pos_overall["month_name"], y=monthly_pos_overall["pos_rate"],
@@ -762,16 +894,8 @@ with tab1:
         "help adjust algorithm weights."
     )
 
-    # ---- Heatmap: Hour × Day-of-Week ----
     st.markdown("##### Positive Rate Heatmap: Day-of-Week × Hour")
-    heatmap_df = duckdb.sql("""
-    SELECT CAST(dow AS INTEGER) AS dow, CAST(hour AS INTEGER) AS hour,
-           COUNT(*) AS scans,
-           ROUND(SUM(CASE WHEN radiologist_answer = 'P' THEN 1.0 ELSE 0.0 END) / COUNT(*) * 100, 1) AS pos_rate
-    FROM temporal_base
-    GROUP BY dow, hour
-    ORDER BY dow, hour
-    """).df()
+    heatmap_df = heatmap_data(temporal_base)
     dow_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     heatmap_df["day_name"] = heatmap_df["dow"].map(DOW_LABELS)
     pivot = heatmap_df.pivot(index="day_name", columns="hour", values="pos_rate").reindex(dow_order)
@@ -820,43 +944,9 @@ with tab2:
         "Rows with missing timestamps or negative durations are excluded from this tab."
     )
 
-    duration_query = """
-    WITH duration_calc AS (
-        SELECT
-            EPOCH(radiologist_sign_time - algos_start_run) / 60.0 AS rad_min,
-            EPOCH(algo1_finish_run - algos_start_run) / 60.0 AS algo1_min,
-            EPOCH(algo2_finish_run - algos_start_run) / 60.0 AS algo2_min,
-            EPOCH(algo3_finish_run - algos_start_run) / 60.0 AS algo3_min
-        FROM filtered_df
-        WHERE radiologist_sign_time IS NOT NULL
-          AND algos_start_run IS NOT NULL
-          AND algo1_finish_run IS NOT NULL
-          AND algo2_finish_run IS NOT NULL
-          AND algo3_finish_run IS NOT NULL
-    )
-    SELECT
-        rad_min AS "Radiologist",
-        algo1_min AS "Algo 1",
-        algo2_min AS "Algo 2",
-        algo3_min AS "Algo 3"
-    FROM duration_calc
-    WHERE rad_min >= 0
-      AND algo1_min >= 0
-      AND algo2_min >= 0
-      AND algo3_min >= 0
-    """
-    duration_df = duckdb.sql(duration_query).df()
+    duration_df = compute_duration_df(filtered_df)
 
-    n_with_times = duckdb.sql(
-        """
-        SELECT COUNT(*) AS n FROM filtered_df
-        WHERE radiologist_sign_time IS NOT NULL
-          AND algos_start_run IS NOT NULL
-          AND algo1_finish_run IS NOT NULL
-          AND algo2_finish_run IS NOT NULL
-          AND algo3_finish_run IS NOT NULL
-        """
-    ).df()["n"].iloc[0]
+    n_with_times = count_with_times(filtered_df)
     dropped = int(n_with_times) - len(duration_df)
     if dropped:
         st.caption(
@@ -931,39 +1021,8 @@ with tab2:
 
         st.divider()
         st.subheader("Scan Volume & Radiologist Time per Hour")
-        hourly_gender_tat = duckdb.sql("""
-        SELECT
-            CAST(EXTRACT(HOUR FROM scan_timestamp) AS INTEGER) AS hour,
-            gender,
-            COUNT(*) AS scans,
-            ROUND(
-                AVG(EPOCH(radiologist_sign_time - algos_start_run) / 60.0), 2
-            ) AS mean_rad_min
-        FROM filtered_df
-        WHERE scan_timestamp IS NOT NULL
-          AND radiologist_sign_time IS NOT NULL
-          AND algos_start_run IS NOT NULL
-          AND EPOCH(radiologist_sign_time - algos_start_run) >= 0
-        GROUP BY hour, gender
-        ORDER BY hour, gender
-        """).df()
-
-        hourly_dept_tat = duckdb.sql("""
-        SELECT
-            CAST(EXTRACT(HOUR FROM scan_timestamp) AS INTEGER) AS hour,
-            patient_class,
-            COUNT(*) AS scans,
-            ROUND(
-                AVG(EPOCH(radiologist_sign_time - algos_start_run) / 60.0), 2
-            ) AS mean_rad_min
-        FROM filtered_df
-        WHERE scan_timestamp IS NOT NULL
-          AND radiologist_sign_time IS NOT NULL
-          AND algos_start_run IS NOT NULL
-          AND EPOCH(radiologist_sign_time - algos_start_run) >= 0
-        GROUP BY hour, patient_class
-        ORDER BY hour, patient_class
-        """).df()
+        hourly_gender_tat = hourly_scans_rad_by_group(filtered_df, "gender")
+        hourly_dept_tat = hourly_scans_rad_by_group(filtered_df, "patient_class")
 
         hour_col1, hour_col2 = st.columns(2, gap="medium")
         with hour_col1:
@@ -1003,42 +1062,7 @@ with tab3:
         "(radiologist as ground truth)."
     )
 
-    metrics_query = """
-    WITH cm AS (
-        SELECT
-            'Algo 1' AS Algorithm,
-            SUM(CASE WHEN algo1_answer = 'P' AND radiologist_answer = 'P' THEN 1 ELSE 0 END) AS TP,
-            SUM(CASE WHEN algo1_answer = 'N' AND radiologist_answer = 'N' THEN 1 ELSE 0 END) AS TN,
-            SUM(CASE WHEN algo1_answer = 'P' AND radiologist_answer = 'N' THEN 1 ELSE 0 END) AS FP,
-            SUM(CASE WHEN algo1_answer = 'N' AND radiologist_answer = 'P' THEN 1 ELSE 0 END) AS FN
-        FROM filtered_df
-        UNION ALL
-        SELECT
-            'Algo 2',
-            SUM(CASE WHEN algo2_answer = 'P' AND radiologist_answer = 'P' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN algo2_answer = 'N' AND radiologist_answer = 'N' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN algo2_answer = 'P' AND radiologist_answer = 'N' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN algo2_answer = 'N' AND radiologist_answer = 'P' THEN 1 ELSE 0 END)
-        FROM filtered_df
-        UNION ALL
-        SELECT
-            'Algo 3',
-            SUM(CASE WHEN algo3_answer = 'P' AND radiologist_answer = 'P' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN algo3_answer = 'N' AND radiologist_answer = 'N' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN algo3_answer = 'P' AND radiologist_answer = 'N' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN algo3_answer = 'N' AND radiologist_answer = 'P' THEN 1 ELSE 0 END)
-        FROM filtered_df
-    )
-    SELECT
-        Algorithm,
-        TP, TN, FP, FN,
-        ROUND((TP * 100.0) / NULLIF(TP + FN, 0), 2) AS "Sensitivity (%)",
-        ROUND((TN * 100.0) / NULLIF(TN + FP, 0), 2) AS "Specificity (%)",
-        ROUND((TP * 100.0) / NULLIF(TP + FP, 0), 2) AS "Precision (%)",
-        ROUND(((TP + TN) * 100.0) / NULLIF(TP + TN + FP + FN, 0), 2) AS "Accuracy (%)"
-    FROM cm
-    """
-    metrics_df = duckdb.sql(metrics_query).df()
+    metrics_df = compute_metrics_df(filtered_df)
     st.dataframe(metrics_df, use_container_width=True, hide_index=True)
 
     radar_metrics = ["Sensitivity (%)", "Specificity (%)", "Precision (%)", "Accuracy (%)"]
@@ -1069,7 +1093,7 @@ with tab3:
         "Accuracy and sensitivity by life-stage and gender for each algorithm. "
         "Coarser age bins keep cell counts usable."
     )
-    ag_df = duckdb.sql(AGE_GENDER_QUERY).df()
+    ag_df = compute_age_gender_df(filtered_df)
     st.dataframe(ag_df, use_container_width=True, hide_index=True)
     ag_acc = ag_df.melt(
         id_vars=["age_group", "gender"],
@@ -1117,18 +1141,7 @@ with tab3:
 
     st.divider()
     st.subheader("Accuracy by Hospital Site")
-    site_query = """
-    SELECT
-        site,
-        COUNT(*) AS scans,
-        ROUND(AVG(CASE WHEN algo1_answer = radiologist_answer THEN 1.0 ELSE 0.0 END) * 100, 1) AS "Algo 1",
-        ROUND(AVG(CASE WHEN algo2_answer = radiologist_answer THEN 1.0 ELSE 0.0 END) * 100, 1) AS "Algo 2",
-        ROUND(AVG(CASE WHEN algo3_answer = radiologist_answer THEN 1.0 ELSE 0.0 END) * 100, 1) AS "Algo 3"
-    FROM filtered_df
-    GROUP BY site
-    ORDER BY site
-    """
-    site_acc = duckdb.sql(site_query).df()
+    site_acc = site_accuracy_df(filtered_df)
     site_long = site_acc.melt(
         id_vars="site",
         value_vars=ALGO_COLS,
@@ -1151,7 +1164,7 @@ with tab3:
 # --- TAB 4: ALGO PERFORMANCE ---
 with tab4:
     st.subheader("Patient Class: IN vs ED")
-    pc_df = duckdb.sql(group_accuracy_query("patient_class")).df()
+    pc_df = group_accuracy_df(filtered_df, "patient_class")
 
     pc_cols = st.columns(len(pc_df) if len(pc_df) else 1)
     for i, row in pc_df.iterrows():
@@ -1169,7 +1182,7 @@ with tab4:
 
     st.divider()
     st.subheader("Gender")
-    gender_algo_df = duckdb.sql(group_accuracy_query("gender")).df()
+    gender_algo_df = group_accuracy_df(filtered_df, "gender")
 
     g_cols = st.columns(len(gender_algo_df) if len(gender_algo_df) else 1)
     for i, row in gender_algo_df.iterrows():
@@ -1191,6 +1204,6 @@ with tab4:
         "Radiologist line shows positive rate (prevalence) per age bin. "
         "Grey bars show scan count per bin (right axis)."
     )
-    age_df = duckdb.sql(AGE_QUERY).df()
+    age_df = compute_age_subgroup_df(filtered_df)
     st.dataframe(age_df, use_container_width=True, hide_index=True)
     st.plotly_chart(age_subgroup_chart(age_df), use_container_width=True)
