@@ -1046,21 +1046,98 @@ def unanimous_disagreement_summary(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _streamlit_mpl_theme() -> tuple[str, str, str]:
+    """Background, foreground, and muted text for matplotlib figures."""
+    bg = "#ffffff"
+    fg = "#31333f"
+    muted = "#6c757d"
+    try:
+        theme_type = st.context.theme.get("type")
+        if theme_type == "dark":
+            bg, fg, muted = "#0e1117", "#fafafa", "#a3a8b4"
+        theme_bg = st.context.theme.get("backgroundColor")
+        theme_fg = st.context.theme.get("textColor")
+        if theme_bg:
+            bg = theme_bg
+        if theme_fg:
+            fg = theme_fg
+    except Exception:
+        pass
+    return bg, fg, muted
+
+
+def _style_venn_figure(
+    fig,
+    ax,
+    venn,
+    *,
+    fg: str,
+    muted: str,
+    title: str,
+) -> None:
+    for patch in getattr(venn, "patches", []) or []:
+        if patch is not None:
+            patch.set_linewidth(1.6)
+            patch.set_edgecolor(muted)
+    for patch in (getattr(venn, "patch1", None), getattr(venn, "patch2", None), getattr(venn, "patch3", None)):
+        if patch is not None:
+            patch.set_linewidth(1.8)
+            patch.set_edgecolor(muted)
+    for label in getattr(venn, "subset_labels", []) or []:
+        if label is not None:
+            label.set_fontsize(10)
+            label.set_fontweight("600")
+            label.set_color(fg)
+    for label in (
+        getattr(venn, "label1", None),
+        getattr(venn, "label2", None),
+        getattr(venn, "label3", None),
+    ):
+        if label is not None:
+            label.set_fontsize(10)
+            label.set_color(fg)
+    ax.set_title(title, fontsize=13, fontweight="600", color=fg, pad=14)
+    ax.axis("off")
+    fig.patch.set_facecolor("none")
+    ax.set_facecolor("none")
+
+
 def unanimous_venn_figures(df: pd.DataFrame):
     import matplotlib.pyplot as plt
     from matplotlib_venn import venn2, venn3
+
+    bg, fg, muted = _streamlit_mpl_theme()
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Source Sans Pro", "Helvetica Neue", "Arial", "sans-serif"],
+            "figure.facecolor": bg,
+            "axes.facecolor": bg,
+            "text.color": fg,
+        }
+    )
 
     summary = unanimous_disagreement_summary(df)
     n_p = int(summary.loc[0, "Count"])
     n_n = int(summary.loc[1, "Count"])
 
-    fig_unanimous, ax_unanimous = plt.subplots(figsize=(6, 4.5))
-    venn2(
+    fig_unanimous, ax_unanimous = plt.subplots(figsize=(6.2, 4.8))
+    fig_unanimous.patch.set_alpha(0)
+    v_unanimous = venn2(
         subsets=(n_p, n_n, 0),
         set_labels=("All algos P\nRadiologist N", "All algos N\nRadiologist P"),
+        set_colors=(COLOR_MAP["Algo 1"], COLOR_MAP["Radiologist"]),
+        alpha=0.42,
         ax=ax_unanimous,
     )
-    ax_unanimous.set_title("Unanimous algo vs radiologist disagreement", fontsize=11)
+    _style_venn_figure(
+        fig_unanimous,
+        ax_unanimous,
+        v_unanimous,
+        fg=fg,
+        muted=muted,
+        title="Unanimous algo vs radiologist disagreement",
+    )
 
     gt_pos = df["radiologist_answer"] == "P"
     fn1 = gt_pos & (df["algo1_answer"] == "N")
@@ -1076,15 +1153,25 @@ def unanimous_venn_figures(df: pd.DataFrame):
         int((fn1 & fn2 & fn3).sum()),
     )
 
-    fig_fn, ax_fn = plt.subplots(figsize=(6.5, 5))
-    venn3(
+    fig_fn, ax_fn = plt.subplots(figsize=(6.8, 5.2))
+    fig_fn.patch.set_alpha(0)
+    v_fn = venn3(
         subsets=fn_subsets,
         set_labels=("Algo 1 FN", "Algo 2 FN", "Algo 3 FN"),
+        set_colors=(COLOR_MAP["Algo 1"], COLOR_MAP["Algo 2"], COLOR_MAP["Algo 3"]),
+        alpha=0.4,
         ax=ax_fn,
     )
-    ax_fn.set_title("False-negative overlap (GT positive, algo negative)", fontsize=11)
-    fig_fn.tight_layout()
-    fig_unanimous.tight_layout()
+    _style_venn_figure(
+        fig_fn,
+        ax_fn,
+        v_fn,
+        fg=fg,
+        muted=muted,
+        title="False-negative overlap (GT positive, algo negative)",
+    )
+    fig_fn.tight_layout(pad=1.2)
+    fig_unanimous.tight_layout(pad=1.2)
     return fig_unanimous, fig_fn
 
 
@@ -1763,9 +1850,9 @@ with tab3:
     venn_col1, venn_col2 = st.columns(2, gap="medium")
     fig_unanimous, fig_fn = unanimous_venn_figures(filtered_df)
     with venn_col1:
-        st.pyplot(fig_unanimous, clear_figure=True)
+        st.pyplot(fig_unanimous, clear_figure=True, use_container_width=True)
     with venn_col2:
-        st.pyplot(fig_fn, clear_figure=True)
+        st.pyplot(fig_fn, clear_figure=True, use_container_width=True)
 
     st.divider()
     st.subheader("Age Subgroups")
