@@ -29,63 +29,13 @@ DEPT_ALGO_COLORS = {
     "IN": {"Algo 1": "#e07a7f", "Algo 2": "#6baed6", "Algo 3": "#fdb462"},
 }
 DEPT_LINE_DASH = {"ED": "solid", "IN": "dash"}
+BAR_FILL_OPACITY = 0.72
 
 
-def streamlit_theme_colors() -> tuple[str, str, str]:
-    """Background, text, and grid colors for the active Streamlit theme."""
-    is_dark = False
-    try:
-        theme_type = st.context.theme.get("type")
-        if theme_type == "dark":
-            is_dark = True
-        elif theme_type == "light":
-            is_dark = False
-    except Exception:
-        try:
-            is_dark = st.get_option("theme.base") == "dark"
-        except Exception:
-            pass
-
-    try:
-        bg = st.context.theme.get("backgroundColor")
-        fg = st.context.theme.get("textColor")
-        if bg and fg:
-            grid = "#464646" if is_dark else "#d0d0d0"
-            return bg, fg, grid
-    except Exception:
-        pass
-
-    if is_dark:
-        return "#0e1117", "#fafafa", "#464646"
-    return "#ffffff", "#31333f", "#d0d0d0"
-
-
-def label_bar_traces(
-    fig: go.Figure,
-    *,
-    horizontal: bool = False,
-    as_percent: bool = False,
-    decimals: int = 1,
-    textposition: str = "outside",
-) -> go.Figure:
+def soften_bar_figure(fig: go.Figure, opacity: float = BAR_FILL_OPACITY) -> go.Figure:
     for trace in fig.data:
-        if trace.type != "bar":
-            continue
-        vals = trace.x if horizontal else trace.y
-        if vals is None:
-            continue
-        labels = []
-        for val in vals:
-            if val is None or (isinstance(val, float) and np.isnan(val)):
-                labels.append("")
-            elif as_percent:
-                labels.append(f"{float(val):.{decimals}f}%")
-            elif decimals == 0 or float(val).is_integer():
-                labels.append(f"{int(round(float(val))):,}")
-            else:
-                labels.append(f"{float(val):.{decimals}f}")
-        trace.text = labels
-        trace.textposition = textposition
+        if trace.type == "bar":
+            trace.update(marker=dict(opacity=opacity), opacity=opacity)
     return fig
 
 FINE_AGE_EDGES = [
@@ -679,7 +629,7 @@ def tat_win_count_chart(duration_df: pd.DataFrame) -> go.Figure:
         height=350,
         margin=dict(l=150, t=50, b=40, r=20),
     )
-    return fig
+    return soften_bar_figure(fig)
 
 
 def tat_clinical_gap_chart(
@@ -727,7 +677,7 @@ def tat_clinical_gap_chart(
     )
     fig.update_traces(textposition="outside")
     fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="Scans")
-    return fig, mean_gap, median_gap
+    return soften_bar_figure(fig), mean_gap, median_gap
 
 
 def hourly_scans_rad_chart(
@@ -743,7 +693,7 @@ def hourly_scans_rad_chart(
             go.Bar(
                 x=sub["hour"], y=sub["scans"],
                 name=f"{group} scans",
-                marker_color=color, opacity=0.5,
+                marker_color=color, opacity=BAR_FILL_OPACITY,
                 text=[f"{int(v):,}" for v in sub["scans"]],
                 textposition="outside",
                 textfont=dict(size=9),
@@ -791,7 +741,7 @@ def hourly_scans_algo_chart(
                 y=sub["scans"],
                 name=f"{dept} scans",
                 marker_color=dept_color,
-                opacity=0.35,
+                opacity=BAR_FILL_OPACITY,
                 text=[f"{int(v):,}" for v in sub["scans"]],
                 textposition="outside",
                 textfont=dict(size=9),
@@ -859,27 +809,9 @@ def diagnostic_radar_chart(metrics_df: pd.DataFrame) -> go.Figure:
                 opacity=0.45,
             )
         )
-    bg, fg, grid = streamlit_theme_colors()
     fig.update_layout(
-        title=dict(text="Diagnostic Profile", font=dict(color=fg)),
-        paper_bgcolor=bg,
-        plot_bgcolor=bg,
-        font=dict(color=fg),
-        polar=dict(
-            bgcolor=bg,
-            radialaxis=dict(
-                visible=True,
-                range=[0, 100],
-                gridcolor=grid,
-                linecolor=grid,
-                tickfont=dict(color=fg, size=9),
-            ),
-            angularaxis=dict(
-                gridcolor=grid,
-                linecolor=grid,
-                tickfont=dict(color=fg, size=9),
-            ),
-        ),
+        title="Diagnostic Profile",
+        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
         showlegend=True,
         legend=dict(
             orientation="v",
@@ -887,8 +819,7 @@ def diagnostic_radar_chart(metrics_df: pd.DataFrame) -> go.Figure:
             y=0.5,
             xanchor="left",
             x=1.08,
-            font=dict(size=10, color=fg),
-            bgcolor=bg,
+            font=dict(size=10),
         ),
         height=320,
         margin=dict(t=50, b=20, l=40, r=110),
@@ -974,7 +905,7 @@ def f1_score_chart(metrics_df: pd.DataFrame) -> go.Figure:
         height=350,
         margin=dict(t=50, b=40),
     )
-    return fig
+    return soften_bar_figure(fig)
 
 
 def npv_chart(metrics_df: pd.DataFrame) -> go.Figure:
@@ -995,7 +926,7 @@ def npv_chart(metrics_df: pd.DataFrame) -> go.Figure:
         height=350,
         margin=dict(t=50, b=40),
     )
-    return fig
+    return soften_bar_figure(fig)
 
 
 def error_rate_chart(metrics_df: pd.DataFrame) -> go.Figure:
@@ -1024,7 +955,7 @@ def error_rate_chart(metrics_df: pd.DataFrame) -> go.Figure:
         legend_title_text="",
         margin=dict(t=60, b=40),
     )
-    return fig
+    return soften_bar_figure(fig)
 
 
 def overall_sensitivity_pct(df: pd.DataFrame, gender: str, algo_col: str) -> float:
@@ -1192,7 +1123,7 @@ def accuracy_bar(df: pd.DataFrame, group_col: str, title: str) -> go.Figure:
     )
     fig.update_traces(textposition="outside")
     fig.update_layout(legend_title_text="", yaxis_title="")
-    return fig
+    return soften_bar_figure(fig)
 
 
 def age_subgroup_chart(age_df: pd.DataFrame) -> go.Figure:
@@ -1394,6 +1325,7 @@ with tab1:
     fig_tvm = go.Figure(go.Bar(
         x=hourly_total_overall["hour"], y=hourly_total_overall["scans"],
         marker_color="#6a994e", name="All scans",
+        opacity=BAR_FILL_OPACITY,
         text=[f"{int(v):,}" for v in hourly_total_overall["scans"]],
         textposition="outside",
         textfont=dict(size=9),
@@ -1656,7 +1588,6 @@ with tab3:
         st.plotly_chart(
             diagnostic_radar_chart(metrics_df),
             use_container_width=True,
-            theme=None,
         )
 
     st.dataframe(metrics_df, use_container_width=True, hide_index=True)
@@ -1727,4 +1658,4 @@ with tab3:
     )
     fig_site.update_traces(textposition="outside")
     fig_site.update_layout(legend_title_text="")
-    st.plotly_chart(fig_site, use_container_width=True)
+    st.plotly_chart(soften_bar_figure(fig_site), use_container_width=True)
