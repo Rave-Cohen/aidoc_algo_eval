@@ -24,6 +24,11 @@ AGE_GROUP_ORDER = ["00-17", "18-39", "40-64", "65+"]
 PATIENT_CLASS_ORDER = ["ED", "IN"]
 GENDER_COLOR_MAP = {"male": "#2a9d8f", "female": "#bc4749"}
 DEPT_COLOR_MAP = {"ED": "#bc4749", "IN": "#2a9d8f"}
+DEPT_ALGO_COLORS = {
+    "ED": {"Algo 1": "#d62728", "Algo 2": "#1f77b4", "Algo 3": "#ff7f0e"},
+    "IN": {"Algo 1": "#e07a7f", "Algo 2": "#6baed6", "Algo 3": "#fdb462"},
+}
+DEPT_LINE_DASH = {"ED": "solid", "IN": "dash"}
 
 FINE_AGE_EDGES = [
     5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41, 44, 47, 50, 53, 56,
@@ -300,6 +305,38 @@ def compute_metrics_df(df: pd.DataFrame) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def compute_age_gender_fine_df(df: pd.DataFrame) -> pd.DataFrame:
+    sub = df[df["age"] >= 5].copy()
+    binned = sub.assign(
+        age_group=pd.cut(
+            sub["age"],
+            bins=FINE_AGE_EDGES,
+            labels=FINE_AGE_LABELS,
+            right=False,
+        )
+    )
+    binned = binned[binned["age_group"].notna()].copy()
+    rows = []
+    for (age_group, gender), grp in binned.groupby(["age_group", "gender"], sort=False):
+        scans = len(grp)
+        row = {"age_group": str(age_group), "gender": gender, "scans": scans}
+        gt_pos = grp[grp["radiologist_answer"] == "P"]
+        gt_neg = grp[grp["radiologist_answer"] == "N"]
+        for name, col in zip(ALGO_COLS, ALGO_ANSWER_COLS):
+            row[f"{name} Sens"] = (
+                round((gt_pos[col] == "P").mean() * 100, 1) if len(gt_pos) else np.nan
+            )
+            row[f"{name} Spec"] = (
+                round((gt_neg[col] == "N").mean() * 100, 1) if len(gt_neg) else np.nan
+            )
+        rows.append(row)
+    out = pd.DataFrame(rows)
+    out["age_group"] = pd.Categorical(
+        out["age_group"], categories=FINE_AGE_LABELS, ordered=True
+    )
+    return out.sort_values(["age_group", "gender"])
 
 
 def compute_age_gender_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -663,7 +700,6 @@ def hourly_scans_rad_chart(
 def hourly_scans_algo_chart(
     df: pd.DataFrame,
     group_col: str,
-    title: str,
 ) -> go.Figure:
     algo_col_map = {
         "Algo 1": "mean_algo1_min",
@@ -671,7 +707,8 @@ def hourly_scans_algo_chart(
         "Algo 3": "mean_algo3_min",
     }
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    for dept, dept_color in DEPT_COLOR_MAP.items():
+    for dept in PATIENT_CLASS_ORDER:
+        dept_color = DEPT_COLOR_MAP[dept]
         sub = df[df[group_col] == dept]
         fig.add_trace(
             go.Bar(
@@ -680,28 +717,42 @@ def hourly_scans_algo_chart(
                 name=f"{dept} scans",
                 marker_color=dept_color,
                 opacity=0.35,
+                legendgroup=f"{dept}-bars",
             ),
             secondary_y=False,
         )
         for algo, col in algo_col_map.items():
+            algo_color = DEPT_ALGO_COLORS[dept][algo]
             fig.add_trace(
                 go.Scatter(
                     x=sub["hour"],
                     y=sub[col],
                     mode="lines+markers",
                     name=f"{dept} — {algo}",
-                    line=dict(color=COLOR_MAP[algo], dash="dot", width=2),
-                    marker=dict(color=COLOR_MAP[algo], size=5),
-                    legendgroup=dept,
+                    line=dict(
+                        color=algo_color,
+                        dash=DEPT_LINE_DASH[dept],
+                        width=2.5 if dept == "ED" else 2,
+                    ),
+                    marker=dict(color=algo_color, size=5),
+                    legendgroup=f"{dept}-{algo}",
                 ),
                 secondary_y=True,
             )
     fig.update_layout(
-        title=title,
+        title="Hourly Scan Volume & Algo Time — by Department",
         barmode="group",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02,
+            font=dict(size=10),
+            tracegroupgap=4,
+        ),
         legend_title_text="",
-        margin=dict(t=80, b=50, l=50, r=50),
+        margin=dict(t=70, b=50, l=50, r=160),
     )
     fig.update_yaxes(title_text="Total Scans", secondary_y=False)
     fig.update_yaxes(title_text="Mean Algo Time (min)", secondary_y=True)
@@ -730,15 +781,15 @@ def diagnostic_radar_chart(metrics_df: pd.DataFrame) -> go.Figure:
         polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
         showlegend=True,
         legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.08,
+            orientation="v",
+            yanchor="middle",
+            y=0.5,
             xanchor="left",
-            x=0,
-            font=dict(size=11),
+            x=1.08,
+            font=dict(size=10),
         ),
-        height=420,
-        margin=dict(t=90, b=30, l=40, r=40),
+        height=320,
+        margin=dict(t=50, b=20, l=40, r=110),
     )
     return fig
 
@@ -813,6 +864,12 @@ def accuracy_bar(df: pd.DataFrame, group_col: str, title: str) -> go.Figure:
 
 
 def age_subgroup_chart(age_df: pd.DataFrame) -> go.Figure:
+    algo_legend_names = {
+        "Radiologist": "Radiologist (prevalence)",
+        "Algo 1": "Algo 1 (accuracy)",
+        "Algo 2": "Algo 2 (accuracy)",
+        "Algo 3": "Algo 3 (accuracy)",
+    }
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(
         go.Bar(
@@ -825,20 +882,21 @@ def age_subgroup_chart(age_df: pd.DataFrame) -> go.Figure:
         secondary_y=True,
     )
     for col in AGE_LINE_COLS:
+        legend_name = algo_legend_names[col]
         fig.add_trace(
             go.Scatter(
                 x=age_df["age_group"],
                 y=age_df[col],
-                name=col,
+                name=legend_name,
                 mode="lines+markers",
                 line=dict(color=COLOR_MAP[col]),
                 marker=dict(color=COLOR_MAP[col]),
-                hovertemplate=f"{col}<br>%{{x}}: %{{y:.1f}}%<extra></extra>",
+                hovertemplate=f"{legend_name}<br>%{{x}}: %{{y:.1f}}%<extra></extra>",
             ),
             secondary_y=False,
         )
     fig.update_layout(
-        title="Accuracy & Radiologist Prevalence by Age Group",
+        title="Prevalence & Algorithm Accuracy by Age Group",
         legend_title_text="",
         xaxis=dict(type="category", title="Age Group"),
         barmode="overlay",
@@ -1124,24 +1182,6 @@ with tab2:
     if duration_df.empty:
         st.info("No valid TAT rows after filtering missing or negative durations.")
     else:
-        timeline_df = pd.DataFrame(
-            {
-                "Entity": duration_df.columns,
-                "Mean (min)": duration_df.mean().round(2).values,
-                "Median (min)": duration_df.median().round(2).values,
-                "Min (min)": duration_df.min().round(2).values,
-                "Max (min)": duration_df.max().round(2).values,
-            }
-        )
-        st.dataframe(
-            timeline_df.style.format(
-                "{:.2f}",
-                subset=["Mean (min)", "Median (min)", "Min (min)", "Max (min)"],
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
         tat_long = duration_df.melt(var_name="Entity", value_name="Minutes")
         tat_means = duration_df.mean()
         fig_box = px.box(
@@ -1166,6 +1206,24 @@ with tab2:
             )
         fig_box.update_layout(showlegend=False, xaxis_title="")
         st.plotly_chart(fig_box, use_container_width=True)
+
+        timeline_df = pd.DataFrame(
+            {
+                "Entity": duration_df.columns,
+                "Mean (min)": duration_df.mean().round(2).values,
+                "Median (min)": duration_df.median().round(2).values,
+                "Min (min)": duration_df.min().round(2).values,
+                "Max (min)": duration_df.max().round(2).values,
+            }
+        )
+        st.dataframe(
+            timeline_df.style.format(
+                "{:.2f}",
+                subset=["Mean (min)", "Median (min)", "Min (min)", "Max (min)"],
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
 
         st.plotly_chart(tat_dot_plot(duration_df), use_container_width=True)
 
@@ -1221,14 +1279,15 @@ with tab2:
                 "acute triage decisions."
             )
 
-        st.markdown("##### Algo Time by Department")
+        st.divider()
+        st.subheader("Algo Time by Department")
+        st.caption(
+            "Bars show hourly scan volume; lines show mean algo completion time. "
+            "ED algos use solid lines with standard hues; IN algos use dashed lines with lighter shades."
+        )
         hourly_dept_algo = hourly_scans_algo_by_group(filtered_df, "patient_class")
         st.plotly_chart(
-            hourly_scans_algo_chart(
-                hourly_dept_algo,
-                "patient_class",
-                "Hourly Scan Volume & Algo Time — by Department",
-            ),
+            hourly_scans_algo_chart(hourly_dept_algo, "patient_class"),
             use_container_width=True,
         )
 
@@ -1241,9 +1300,9 @@ with tab3:
     )
 
     metrics_df = compute_metrics_df(filtered_df)
-    metrics_table_col, metrics_chart_col = st.columns([1, 1.4], gap="medium")
+    metrics_table_col, metrics_chart_col = st.columns([1.35, 1], gap="medium")
     with metrics_table_col:
-        st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+        st.dataframe(metrics_df, use_container_width=True, hide_index=True, height=260)
     with metrics_chart_col:
         st.plotly_chart(
             diagnostic_radar_chart(metrics_df),
@@ -1253,30 +1312,37 @@ with tab3:
     st.divider()
     st.subheader("Age Subgroups")
     st.markdown(
-        "Radiologist line shows positive rate (prevalence) per 3-year age bin (from age 5). "
-        "Grey bars show scan count per bin (right axis)."
+        "Green line: **Radiologist (prevalence)** — positive rate per 3-year bin. "
+        "Algo lines: **accuracy** vs. radiologist ground truth. "
+        "Grey bars: scan count (right axis)."
     )
     age_df = compute_age_subgroup_df(filtered_df)
-    st.dataframe(age_df, use_container_width=True, hide_index=True)
     st.plotly_chart(age_subgroup_chart(age_df), use_container_width=True)
+    st.dataframe(age_df, use_container_width=True, hide_index=True)
 
     st.divider()
-    st.subheader("Age × Gender Performance")
+    st.subheader("Age × Gender Sensitivity Performance")
     st.markdown(
-        "Algorithm accuracy and sensitivity across life-stage and gender. "
-        "Line charts highlight relative performance trends per gender."
+        "Sensitivity by 3-year age bin and gender — share of GT-positive scans "
+        "correctly flagged by each algorithm."
     )
-    ag_df = compute_age_gender_df(filtered_df)
-    st.dataframe(ag_df, use_container_width=True, hide_index=True)
+    ag_fine_df = compute_age_gender_fine_df(filtered_df)
+    st.dataframe(ag_fine_df, use_container_width=True, hide_index=True)
     st.plotly_chart(
         age_gender_metric_chart(
-            ag_df, "Acc", "Accuracy (%)", "Accuracy by Age Group and Gender"
+            ag_fine_df, "Sens", "Sensitivity (%)", "Sensitivity by Age Group and Gender"
         ),
         use_container_width=True,
     )
+
+    st.subheader("Age × Gender Specificity Performance")
+    st.markdown(
+        "Specificity by 3-year age bin and gender — share of GT-negative scans "
+        "correctly cleared by each algorithm."
+    )
     st.plotly_chart(
         age_gender_metric_chart(
-            ag_df, "Sens", "Sensitivity (%)", "Sensitivity by Age Group and Gender"
+            ag_fine_df, "Spec", "Specificity (%)", "Specificity by Age Group and Gender"
         ),
         use_container_width=True,
     )
