@@ -800,6 +800,7 @@ def age_gender_metric_chart(
     y_label: str,
     title: str,
 ) -> go.Figure:
+    x_categories = [str(label) for label in FINE_AGE_LABELS]
     fig = make_subplots(
         rows=1,
         cols=2,
@@ -817,16 +818,17 @@ def age_gender_metric_chart(
                     mode="lines+markers",
                     name=algo,
                     line=dict(color=COLOR_MAP[algo], width=2.5),
-                    marker=dict(color=COLOR_MAP[algo], size=8),
+                    marker=dict(color=COLOR_MAP[algo], size=7),
                     legendgroup=algo,
                     showlegend=(col_idx == 1),
+                    connectgaps=False,
                 ),
                 row=1,
                 col=col_idx,
             )
     fig.update_layout(
         title=title,
-        height=400,
+        height=420,
         legend=dict(
             orientation="h",
             yanchor="bottom",
@@ -834,10 +836,20 @@ def age_gender_metric_chart(
             xanchor="center",
             x=0.5,
         ),
-        margin=dict(t=100, b=40, l=50, r=20),
+        margin=dict(t=100, b=80, l=50, r=20),
     )
-    fig.update_yaxes(title_text=y_label, range=[0, 100])
-    fig.update_xaxes(title_text="Age group")
+    fig.update_yaxes(title_text=y_label, range=[0, 100], row=1, col=1)
+    fig.update_yaxes(range=[0, 100], row=1, col=2)
+    for col_idx in (1, 2):
+        fig.update_xaxes(
+            title_text="Age group (years)",
+            type="category",
+            categoryorder="array",
+            categoryarray=x_categories,
+            tickangle=-45,
+            row=1,
+            col=col_idx,
+        )
     return fig
 
 
@@ -898,8 +910,15 @@ def age_subgroup_chart(age_df: pd.DataFrame) -> go.Figure:
     fig.update_layout(
         title="Prevalence & Algorithm Accuracy by Age Group",
         legend_title_text="",
-        xaxis=dict(type="category", title="Age Group"),
+        xaxis=dict(
+            type="category",
+            title="Age Group (years)",
+            categoryorder="array",
+            categoryarray=[str(label) for label in FINE_AGE_LABELS],
+            tickangle=-45,
+        ),
         barmode="overlay",
+        margin=dict(b=80),
     )
     fig.update_yaxes(title_text="Rate (%)", secondary_y=False, range=[0, 100])
     fig.update_yaxes(title_text="Scan count", secondary_y=True, showgrid=False)
