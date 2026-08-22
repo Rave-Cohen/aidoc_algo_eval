@@ -909,6 +909,8 @@ def f1_score_chart(metrics_df: pd.DataFrame) -> go.Figure:
 
 
 def npv_chart(metrics_df: pd.DataFrame) -> go.Figure:
+    max_npv = float(metrics_df["NPV (%)"].max())
+    y_max = max_npv + max(4.0, max_npv * 0.04)
     fig = px.bar(
         metrics_df,
         x="Algorithm",
@@ -918,13 +920,13 @@ def npv_chart(metrics_df: pd.DataFrame) -> go.Figure:
         title="NPV per Algorithm",
         text=metrics_df["NPV (%)"].map(lambda v: f"{v:.2f}%"),
     )
-    fig.update_traces(textposition="outside")
+    fig.update_traces(textposition="outside", cliponaxis=False)
     fig.update_layout(
         showlegend=False,
-        yaxis=dict(range=[0, 100], title="NPV (%)"),
+        yaxis=dict(range=[0, y_max], title="NPV (%)"),
         xaxis_title="",
         height=350,
-        margin=dict(t=50, b=40),
+        margin=dict(t=55, b=40),
     )
     return soften_bar_figure(fig)
 
