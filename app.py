@@ -30,7 +30,32 @@ DEPT_ALGO_COLORS = {
 }
 DEPT_LINE_DASH = {"ED": "solid", "IN": "dash"}
 
-RADAR_BG = "#1a1a2e"
+
+def streamlit_chart_bg() -> str:
+    try:
+        bg = st.get_option("theme.backgroundColor")
+        if bg:
+            return bg
+    except Exception:
+        pass
+    try:
+        return "#0e1117" if st.get_option("theme.base") == "dark" else "#ffffff"
+    except Exception:
+        return "#ffffff"
+
+
+def streamlit_chart_fg() -> str:
+    try:
+        return "#fafafa" if st.get_option("theme.base") == "dark" else "#31333f"
+    except Exception:
+        return "#31333f"
+
+
+def streamlit_chart_grid() -> str:
+    try:
+        return "#3d3d3d" if st.get_option("theme.base") == "dark" else "#d0d0d0"
+    except Exception:
+        return "#d0d0d0"
 
 
 def label_bar_traces(
@@ -832,24 +857,27 @@ def diagnostic_radar_chart(metrics_df: pd.DataFrame) -> go.Figure:
                 opacity=0.45,
             )
         )
+    bg = streamlit_chart_bg()
+    fg = streamlit_chart_fg()
+    grid = streamlit_chart_grid()
     fig.update_layout(
-        title=dict(text="Diagnostic Profile", font=dict(color="#f5f5f5")),
-        paper_bgcolor=RADAR_BG,
-        plot_bgcolor=RADAR_BG,
-        font=dict(color="#f5f5f5"),
+        title=dict(text="Diagnostic Profile", font=dict(color=fg)),
+        paper_bgcolor=bg,
+        plot_bgcolor=bg,
+        font=dict(color=fg),
         polar=dict(
-            bgcolor=RADAR_BG,
+            bgcolor=bg,
             radialaxis=dict(
                 visible=True,
                 range=[0, 100],
-                gridcolor="#4a4a6a",
-                linecolor="#8888aa",
-                tickfont=dict(color="#f5f5f5", size=9),
+                gridcolor=grid,
+                linecolor=grid,
+                tickfont=dict(color=fg, size=9),
             ),
             angularaxis=dict(
-                gridcolor="#4a4a6a",
-                linecolor="#8888aa",
-                tickfont=dict(color="#f5f5f5", size=9),
+                gridcolor=grid,
+                linecolor=grid,
+                tickfont=dict(color=fg, size=9),
             ),
         ),
         showlegend=True,
@@ -859,8 +887,8 @@ def diagnostic_radar_chart(metrics_df: pd.DataFrame) -> go.Figure:
             y=0.5,
             xanchor="left",
             x=1.08,
-            font=dict(size=10, color="#f5f5f5"),
-            bgcolor="rgba(0,0,0,0)",
+            font=dict(size=10, color=fg),
+            bgcolor=bg,
         ),
         height=320,
         margin=dict(t=50, b=20, l=40, r=110),
