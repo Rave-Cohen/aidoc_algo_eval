@@ -1021,6 +1021,73 @@ def error_rate_chart(metrics_df: pd.DataFrame) -> go.Figure:
     return soften_bar_figure(fig)
 
 
+def unanimous_disagreement_summary(df: pd.DataFrame) -> pd.DataFrame:
+    all_p_rad_n = (
+        (df["radiologist_answer"] == "N")
+        & (df["algo1_answer"] == "P")
+        & (df["algo2_answer"] == "P")
+        & (df["algo3_answer"] == "P")
+    )
+    all_n_rad_p = (
+        (df["radiologist_answer"] == "P")
+        & (df["algo1_answer"] == "N")
+        & (df["algo2_answer"] == "N")
+        & (df["algo3_answer"] == "N")
+    )
+    return pd.DataFrame(
+        [
+            {"Pattern": "All algos P, radiologist N", "Count": int(all_p_rad_n.sum())},
+            {"Pattern": "All algos N, radiologist P", "Count": int(all_n_rad_p.sum())},
+            {
+                "Pattern": "Any unanimous algo vs radiologist",
+                "Count": int(all_p_rad_n.sum() + all_n_rad_p.sum()),
+            },
+        ]
+    )
+
+
+def unanimous_venn_figures(df: pd.DataFrame):
+    import matplotlib.pyplot as plt
+    from matplotlib_venn import venn2, venn3
+
+    summary = unanimous_disagreement_summary(df)
+    n_p = int(summary.loc[0, "Count"])
+    n_n = int(summary.loc[1, "Count"])
+
+    fig_unanimous, ax_unanimous = plt.subplots(figsize=(6, 4.5))
+    venn2(
+        subsets=(n_p, n_n, 0),
+        set_labels=("All algos P\nRadiologist N", "All algos N\nRadiologist P"),
+        ax=ax_unanimous,
+    )
+    ax_unanimous.set_title("Unanimous algo vs radiologist disagreement", fontsize=11)
+
+    gt_pos = df["radiologist_answer"] == "P"
+    fn1 = gt_pos & (df["algo1_answer"] == "N")
+    fn2 = gt_pos & (df["algo2_answer"] == "N")
+    fn3 = gt_pos & (df["algo3_answer"] == "N")
+    fn_subsets = (
+        int((fn1 & ~fn2 & ~fn3).sum()),
+        int((~fn1 & fn2 & ~fn3).sum()),
+        int((fn1 & fn2 & ~fn3).sum()),
+        int((~fn1 & ~fn2 & fn3).sum()),
+        int((fn1 & ~fn2 & fn3).sum()),
+        int((~fn1 & fn2 & fn3).sum()),
+        int((fn1 & fn2 & fn3).sum()),
+    )
+
+    fig_fn, ax_fn = plt.subplots(figsize=(6.5, 5))
+    venn3(
+        subsets=fn_subsets,
+        set_labels=("Algo 1 FN", "Algo 2 FN", "Algo 3 FN"),
+        ax=ax_fn,
+    )
+    ax_fn.set_title("False-negative overlap (GT positive, algo negative)", fontsize=11)
+    fig_fn.tight_layout()
+    fig_unanimous.tight_layout()
+    return fig_unanimous, fig_fn
+
+
 def overall_sensitivity_pct(df: pd.DataFrame, gender: str, algo_col: str) -> float:
     sub = df[(df["gender"] == gender) & (df["age"] >= 5)]
     gt_pos = sub[sub["radiologist_answer"] == "P"]
@@ -1686,6 +1753,19 @@ with tab3:
         st.plotly_chart(npv_chart(metrics_df), use_container_width=True)
 
     st.plotly_chart(error_rate_chart(metrics_df), use_container_width=True)
+
+    st.markdown("##### Unanimous disagreements with radiologist")
+    st.caption(
+        "Cases where all three algorithms agree with each other but disagree with the radiologist."
+    )
+    unanimous_df = unanimous_disagreement_summary(filtered_df)
+    st.dataframe(unanimous_df, use_container_width=True, hide_index=True)
+    venn_col1, venn_col2 = st.columns(2, gap="medium")
+    fig_unanimous, fig_fn = unanimous_venn_figures(filtered_df)
+    with venn_col1:
+        st.pyplot(fig_unanimous, clear_figure=True)
+    with venn_col2:
+        st.pyplot(fig_fn, clear_figure=True)
 
     st.divider()
     st.subheader("Age Subgroups")
