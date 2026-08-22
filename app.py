@@ -26,13 +26,14 @@ GENDER_COLOR_MAP = {"male": "#2a9d8f", "female": "#bc4749"}
 DEPT_COLOR_MAP = {"ED": "#bc4749", "IN": "#2a9d8f"}
 
 FINE_AGE_EDGES = [
-    -np.inf, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 32, 37, 42, 47, 52, 57, 62,
-    67, 70, 73, 76, 79, 82, np.inf,
+    5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41, 44, 47, 50, 53, 56,
+    59, 62, 65, 68, 71, 74, 77, 80, 83, np.inf,
 ]
 FINE_AGE_LABELS = [
-    "00-03", "03-06", "06-09", "09-12", "12-15", "15-18", "18-21", "21-24",
-    "24-27", "27-30", "30-32", "32-37", "37-42", "42-47", "47-52", "52-57",
-    "57-62", "62-67", "67-70", "70-73", "73-76", "76-79", "79-82", "82+",
+    "05-08", "08-11", "11-14", "14-17", "17-20", "20-23", "23-26", "26-29",
+    "29-32", "32-35", "35-38", "38-41", "41-44", "44-47", "47-50", "50-53",
+    "53-56", "56-59", "59-62", "62-65", "65-68", "68-71", "71-74", "74-77",
+    "77-80", "80-83", "83+",
 ]
 
 MONTH_LABELS = {
@@ -243,6 +244,39 @@ def hourly_scans_rad_by_group(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
     )
 
 
+def hourly_scans_algo_by_group(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
+    required = [
+        "scan_timestamp",
+        "algos_start_run",
+        "algo1_finish_run",
+        "algo2_finish_run",
+        "algo3_finish_run",
+    ]
+    sub = df[df[required].notna().all(axis=1)].copy()
+    sub["hour"] = sub["scan_timestamp"].dt.hour.astype(int)
+    for i, col in enumerate(ALGO_ANSWER_COLS, 1):
+        finish_col = f"algo{i}_finish_run"
+        sub[f"algo{i}_min"] = (
+            sub[finish_col] - sub["algos_start_run"]
+        ).dt.total_seconds() / 60.0
+    valid = (sub[[f"algo{i}_min" for i in range(1, 4)]] >= 0).all(axis=1)
+    sub = sub[valid]
+    return (
+        sub.groupby(["hour", group_col], as_index=False)
+        .agg(
+            scans=("radiologist_answer", "count"),
+            **{
+                f"mean_{name.lower().replace(' ', '')}_min": (
+                    f"algo{i}_min",
+                    lambda s, n=name: round(s.mean(), 2),
+                )
+                for i, name in enumerate(ALGO_COLS, 1)
+            },
+        )
+        .sort_values(["hour", group_col])
+    )
+
+
 def compute_metrics_df(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for name, col in zip(ALGO_COLS, ALGO_ANSWER_COLS):
@@ -310,9 +344,10 @@ def site_accuracy_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_age_subgroup_df(df: pd.DataFrame) -> pd.DataFrame:
-    binned = df.assign(
+    sub = df[df["age"] >= 5].copy()
+    binned = sub.assign(
         age_group=pd.cut(
-            df["age"],
+            sub["age"],
             bins=FINE_AGE_EDGES,
             labels=FINE_AGE_LABELS,
             right=False,
@@ -625,6 +660,136 @@ def hourly_scans_rad_chart(
     return fig
 
 
+def hourly_scans_algo_chart(
+    df: pd.DataFrame,
+    group_col: str,
+    title: str,
+) -> go.Figure:
+    algo_col_map = {
+        "Algo 1": "mean_algo1_min",
+        "Algo 2": "mean_algo2_min",
+        "Algo 3": "mean_algo3_min",
+    }
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    for dept, dept_color in DEPT_COLOR_MAP.items():
+        sub = df[df[group_col] == dept]
+        fig.add_trace(
+            go.Bar(
+                x=sub["hour"],
+                y=sub["scans"],
+                name=f"{dept} scans",
+                marker_color=dept_color,
+                opacity=0.35,
+            ),
+            secondary_y=False,
+        )
+        for algo, col in algo_col_map.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=sub["hour"],
+                    y=sub[col],
+                    mode="lines+markers",
+                    name=f"{dept} — {algo}",
+                    line=dict(color=COLOR_MAP[algo], dash="dot", width=2),
+                    marker=dict(color=COLOR_MAP[algo], size=5),
+                    legendgroup=dept,
+                ),
+                secondary_y=True,
+            )
+    fig.update_layout(
+        title=title,
+        barmode="group",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        legend_title_text="",
+        margin=dict(t=80, b=50, l=50, r=50),
+    )
+    fig.update_yaxes(title_text="Total Scans", secondary_y=False)
+    fig.update_yaxes(title_text="Mean Algo Time (min)", secondary_y=True)
+    fig.update_xaxes(title_text="Hour (0-23)")
+    return fig
+
+
+def diagnostic_radar_chart(metrics_df: pd.DataFrame) -> go.Figure:
+    radar_metrics = ["Sensitivity (%)", "Specificity (%)", "Precision (%)", "Accuracy (%)"]
+    fig = go.Figure()
+    for _, row in metrics_df.iterrows():
+        values = [row[m] for m in radar_metrics]
+        fig.add_trace(
+            go.Scatterpolar(
+                r=values + [values[0]],
+                theta=radar_metrics + [radar_metrics[0]],
+                name=row["Algorithm"],
+                line=dict(color=COLOR_MAP[row["Algorithm"]]),
+                fill="toself",
+                fillcolor=COLOR_MAP[row["Algorithm"]],
+                opacity=0.45,
+            )
+        )
+    fig.update_layout(
+        title="Diagnostic Profile",
+        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.08,
+            xanchor="left",
+            x=0,
+            font=dict(size=11),
+        ),
+        height=420,
+        margin=dict(t=90, b=30, l=40, r=40),
+    )
+    return fig
+
+
+def age_gender_metric_chart(
+    ag_df: pd.DataFrame,
+    metric_suffix: str,
+    y_label: str,
+    title: str,
+) -> go.Figure:
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=["Male", "Female"],
+        shared_yaxes=True,
+    )
+    for col_idx, gender in enumerate(["male", "female"], start=1):
+        sub = ag_df[ag_df["gender"] == gender].sort_values("age_group")
+        for algo in ALGO_COLS:
+            col_name = f"{algo} {metric_suffix}"
+            fig.add_trace(
+                go.Scatter(
+                    x=sub["age_group"].astype(str),
+                    y=sub[col_name],
+                    mode="lines+markers",
+                    name=algo,
+                    line=dict(color=COLOR_MAP[algo], width=2.5),
+                    marker=dict(color=COLOR_MAP[algo], size=8),
+                    legendgroup=algo,
+                    showlegend=(col_idx == 1),
+                ),
+                row=1,
+                col=col_idx,
+            )
+    fig.update_layout(
+        title=title,
+        height=400,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.12,
+            xanchor="center",
+            x=0.5,
+        ),
+        margin=dict(t=100, b=40, l=50, r=20),
+    )
+    fig.update_yaxes(title_text=y_label, range=[0, 100])
+    fig.update_xaxes(title_text="Age group")
+    return fig
+
+
 def accuracy_bar(df: pd.DataFrame, group_col: str, title: str) -> go.Figure:
     long = df.melt(
         id_vars=group_col,
@@ -726,7 +891,7 @@ genders = st.sidebar.multiselect(
 age_max = int(df["age"].max())
 st.sidebar.markdown("**Age range (years)**")
 age_col1, age_col2 = st.sidebar.columns(2)
-age_lo = age_col1.number_input("From", min_value=0, max_value=age_max, value=0, step=1)
+age_lo = age_col1.number_input("From", min_value=5, max_value=age_max, value=5, step=1)
 age_hi = age_col2.number_input("To", min_value=0, max_value=age_max, value=age_max, step=1)
 if age_lo > age_hi:
     age_lo, age_hi = age_hi, age_lo
@@ -745,8 +910,8 @@ col4.metric("Active Sites", f"{filtered_df['site'].nunique() if total_scans else
 
 st.divider()
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["Overview", "Timelines", "Metrics", "Algo Performance"]
+tab1, tab2, tab3 = st.tabs(
+    ["Overview", "Timelines", "Algo Performance"]
 )
 
 # --- TAB 1: OVERVIEW ---
@@ -792,7 +957,7 @@ with tab1:
     st.markdown(
         "**Notes**\n\n"
         "- Prevalence seems to be consistently higher in the **IN** department.\n\n"
-        "- Prevalence seems to be higher in **younger age groups**.\n\n"
+        "- Prevalence seems to be higher in **younger age groups** — e.g., in the **IN** department, ages 18–39 show **14.1%** prevalence vs. **11.6%** for ages 40–64.\n\n"
         "- There is no notable difference in distributions between the **two sites** provided.\n\n"
         "- **Males** are much more common in the **ED** department."
     )
@@ -1051,10 +1216,23 @@ with tab2:
                 use_container_width=True,
             )
             st.markdown(
-                "**Note:** ED radiologist verdicts take around ~1 minute longer relative to IN."
+                "**Note:** IN radiologist verdicts take around ~1 minute longer than ED — "
+                "ED workflows likely prioritize faster turnaround given the urgency of "
+                "acute triage decisions."
             )
 
-# --- TAB 3: METRICS ---
+        st.markdown("##### Algo Time by Department")
+        hourly_dept_algo = hourly_scans_algo_by_group(filtered_df, "patient_class")
+        st.plotly_chart(
+            hourly_scans_algo_chart(
+                hourly_dept_algo,
+                "patient_class",
+                "Hourly Scan Volume & Algo Time — by Department",
+            ),
+            use_container_width=True,
+        )
+
+# --- TAB 3: ALGO PERFORMANCE ---
 with tab3:
     st.subheader("Core Clinical Metrics")
     st.markdown(
@@ -1063,81 +1241,45 @@ with tab3:
     )
 
     metrics_df = compute_metrics_df(filtered_df)
-    st.dataframe(metrics_df, use_container_width=True, hide_index=True)
-
-    radar_metrics = ["Sensitivity (%)", "Specificity (%)", "Precision (%)", "Accuracy (%)"]
-    fig_radar = go.Figure()
-    for _, row in metrics_df.iterrows():
-        values = [row[m] for m in radar_metrics]
-        fig_radar.add_trace(
-            go.Scatterpolar(
-                r=values + [values[0]],
-                theta=radar_metrics + [radar_metrics[0]],
-                name=row["Algorithm"],
-                line=dict(color=COLOR_MAP[row["Algorithm"]]),
-                fill="toself",
-                fillcolor=COLOR_MAP[row["Algorithm"]],
-                opacity=0.45,
-            )
+    metrics_table_col, metrics_chart_col = st.columns([1, 1.4], gap="medium")
+    with metrics_table_col:
+        st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+    with metrics_chart_col:
+        st.plotly_chart(
+            diagnostic_radar_chart(metrics_df),
+            use_container_width=True,
         )
-    fig_radar.update_layout(
-        title="Diagnostic Profile",
-        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
-        showlegend=True,
+
+    st.divider()
+    st.subheader("Age Subgroups")
+    st.markdown(
+        "Radiologist line shows positive rate (prevalence) per 3-year age bin (from age 5). "
+        "Grey bars show scan count per bin (right axis)."
     )
-    st.plotly_chart(fig_radar, use_container_width=True)
+    age_df = compute_age_subgroup_df(filtered_df)
+    st.dataframe(age_df, use_container_width=True, hide_index=True)
+    st.plotly_chart(age_subgroup_chart(age_df), use_container_width=True)
 
     st.divider()
     st.subheader("Age × Gender Performance")
     st.markdown(
-        "Accuracy and sensitivity by life-stage and gender for each algorithm. "
-        "Coarser age bins keep cell counts usable."
+        "Algorithm accuracy and sensitivity across life-stage and gender. "
+        "Line charts highlight relative performance trends per gender."
     )
     ag_df = compute_age_gender_df(filtered_df)
     st.dataframe(ag_df, use_container_width=True, hide_index=True)
-    ag_acc = ag_df.melt(
-        id_vars=["age_group", "gender"],
-        value_vars=["Algo 1 Acc", "Algo 2 Acc", "Algo 3 Acc"],
-        var_name="Algorithm",
-        value_name="Accuracy (%)",
+    st.plotly_chart(
+        age_gender_metric_chart(
+            ag_df, "Acc", "Accuracy (%)", "Accuracy by Age Group and Gender"
+        ),
+        use_container_width=True,
     )
-    ag_acc["Algorithm"] = ag_acc["Algorithm"].str.replace(" Acc", "", regex=False)
-    fig_ag = px.bar(
-        ag_acc,
-        x="age_group",
-        y="Accuracy (%)",
-        color="Algorithm",
-        facet_col="gender",
-        barmode="group",
-        title="Accuracy by Age Group and Gender",
-        color_discrete_map=COLOR_MAP,
-        labels={"age_group": "Age group"},
-        category_orders={"age_group": ["00-17", "18-39", "40-64", "65+"]},
+    st.plotly_chart(
+        age_gender_metric_chart(
+            ag_df, "Sens", "Sensitivity (%)", "Sensitivity by Age Group and Gender"
+        ),
+        use_container_width=True,
     )
-    fig_ag.update_layout(legend_title_text="")
-    st.plotly_chart(fig_ag, use_container_width=True)
-
-    ag_sens = ag_df.melt(
-        id_vars=["age_group", "gender"],
-        value_vars=["Algo 1 Sens", "Algo 2 Sens", "Algo 3 Sens"],
-        var_name="Algorithm",
-        value_name="Sensitivity (%)",
-    )
-    ag_sens["Algorithm"] = ag_sens["Algorithm"].str.replace(" Sens", "", regex=False)
-    fig_ag_s = px.bar(
-        ag_sens,
-        x="age_group",
-        y="Sensitivity (%)",
-        color="Algorithm",
-        facet_col="gender",
-        barmode="group",
-        title="Sensitivity by Age Group and Gender",
-        color_discrete_map=COLOR_MAP,
-        labels={"age_group": "Age group"},
-        category_orders={"age_group": ["00-17", "18-39", "40-64", "65+"]},
-    )
-    fig_ag_s.update_layout(legend_title_text="")
-    st.plotly_chart(fig_ag_s, use_container_width=True)
 
     st.divider()
     st.subheader("Accuracy by Hospital Site")
@@ -1160,50 +1302,3 @@ with tab3:
     )
     fig_site.update_layout(legend_title_text="")
     st.plotly_chart(fig_site, use_container_width=True)
-
-# --- TAB 4: ALGO PERFORMANCE ---
-with tab4:
-    st.subheader("Patient Class: IN vs ED")
-    pc_df = group_accuracy_df(filtered_df, "patient_class")
-
-    pc_cols = st.columns(len(pc_df) if len(pc_df) else 1)
-    for i, row in pc_df.iterrows():
-        pc_cols[i].metric(
-            f"{row['patient_class']} scans",
-            f"{int(row['scans']):,}",
-            f"{row['prevalence_pct']}% prevalence",
-        )
-
-    st.dataframe(pc_df, use_container_width=True, hide_index=True)
-    st.plotly_chart(
-        accuracy_bar(pc_df, "patient_class", "Accuracy (%) by Patient Class"),
-        use_container_width=True,
-    )
-
-    st.divider()
-    st.subheader("Gender")
-    gender_algo_df = group_accuracy_df(filtered_df, "gender")
-
-    g_cols = st.columns(len(gender_algo_df) if len(gender_algo_df) else 1)
-    for i, row in gender_algo_df.iterrows():
-        g_cols[i].metric(
-            f"{row['gender']} scans",
-            f"{int(row['scans']):,}",
-            f"{row['prevalence_pct']}% prevalence",
-        )
-
-    st.dataframe(gender_algo_df, use_container_width=True, hide_index=True)
-    st.plotly_chart(
-        accuracy_bar(gender_algo_df, "gender", "Accuracy (%) by Gender"),
-        use_container_width=True,
-    )
-
-    st.divider()
-    st.subheader("Age Subgroups")
-    st.markdown(
-        "Radiologist line shows positive rate (prevalence) per age bin. "
-        "Grey bars show scan count per bin (right axis)."
-    )
-    age_df = compute_age_subgroup_df(filtered_df)
-    st.dataframe(age_df, use_container_width=True, hide_index=True)
-    st.plotly_chart(age_subgroup_chart(age_df), use_container_width=True)
