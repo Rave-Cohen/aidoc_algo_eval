@@ -1583,7 +1583,7 @@ with tab2:
         st.plotly_chart(fig_clin, use_container_width=True)
         st.markdown(
             "**Note:** It seems that most of the time the TAT gaps between Algo 3 and the "
-            "Radiologist are minor."
+            "Radiologist are minor on **IN** but much higher on **ED**."
         )
 
         st.divider()
