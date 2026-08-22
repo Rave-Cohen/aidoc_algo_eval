@@ -680,6 +680,67 @@ def tat_clinical_gap_chart(
     return soften_bar_figure(fig), mean_gap, median_gap
 
 
+def rad_algo_tat_correlation_chart(
+    duration_df: pd.DataFrame,
+) -> tuple[go.Figure, pd.DataFrame]:
+    rad = duration_df["Radiologist"]
+    corr_rows = []
+    fig = make_subplots(
+        rows=1,
+        cols=3,
+        subplot_titles=[f"{algo} vs Radiologist" for algo in ALGO_COLS],
+        horizontal_spacing=0.06,
+    )
+    for col_idx, algo in enumerate(ALGO_COLS, start=1):
+        algo_tat = duration_df[algo]
+        r = float(np.corrcoef(rad, algo_tat)[0, 1])
+        slope, intercept = np.polyfit(rad, algo_tat, 1)
+        corr_rows.append({"Comparison": f"Radiologist vs {algo}", "Pearson r": round(r, 4)})
+
+        fig.add_trace(
+            go.Scatter(
+                x=rad,
+                y=algo_tat,
+                mode="markers",
+                marker=dict(size=3, color=COLOR_MAP[algo], opacity=0.18),
+                name=algo,
+                showlegend=False,
+                hovertemplate=(
+                    f"Radiologist: %{{x:.1f}} min<br>{algo}: %{{y:.1f}} min<extra></extra>"
+                ),
+            ),
+            row=1,
+            col=col_idx,
+        )
+        x_range = np.linspace(rad.min(), rad.max(), 2)
+        fig.add_trace(
+            go.Scatter(
+                x=x_range,
+                y=slope * x_range + intercept,
+                mode="lines",
+                line=dict(color=COLOR_MAP[algo], dash="dash", width=2),
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=col_idx,
+        )
+        fig.layout.annotations[col_idx - 1].update(
+            text=f"{algo}<br>r = {r:.3f}",
+            font=dict(size=11),
+        )
+
+    fig.update_layout(
+        title="Radiologist TAT vs Algorithm TAT (per scan)",
+        height=380,
+        margin=dict(t=70, b=50, l=45, r=25),
+    )
+    for col_idx in range(1, 4):
+        fig.update_xaxes(title_text="Radiologist (min)", row=1, col=col_idx)
+        fig.update_yaxes(title_text=f"{ALGO_COLS[col_idx - 1]} (min)", row=1, col=col_idx)
+    return fig, pd.DataFrame(corr_rows)
+
+
 def hourly_scans_rad_chart(
     df: pd.DataFrame,
     group_col: str,
@@ -1202,7 +1263,7 @@ def load_data():
 df = load_data()
 
 st.title("Aidoc Algorithm Evaluation Dashboard")
-st.markdown("Interactive local analysis of AI performance and turnaround times.")
+st.markdown("Interactive analysis of medical dataset, treatment timelines and medical algorithms performance.")
 
 st.sidebar.header("Filter Data")
 sites = st.sidebar.multiselect(
@@ -1436,6 +1497,10 @@ with tab1:
         f"**🔥 Hottest:** {hottest_day} at {hottest_hour}:00 ({hottest_rate}% positive rate)  \n"
         f"**❄️ Coldest:** {coldest_day} at {coldest_hour}:00 ({coldest_rate}% positive rate)"
     )
+    st.markdown(
+        "**Note:** This analysis can be more interesting when dealing with greater amount of "
+        "scans / data, since the partition is quite big."
+    )
 
 # --- TAB 2: TIMELINES ---
 with tab2:
@@ -1519,6 +1584,26 @@ with tab2:
         st.markdown(
             "**Note:** It seems that most of the time the TAT gaps between Algo 3 and the "
             "Radiologist are minor."
+        )
+
+        st.divider()
+        st.subheader("Radiologist vs Algorithm TAT Correlation")
+        st.caption(
+            "Per-scan Pearson correlation: does longer radiologist turnaround on a scan "
+            "align with longer algorithm processing on that same scan?"
+        )
+        fig_rad_corr, corr_df = rad_algo_tat_correlation_chart(duration_df)
+        r_cols = st.columns(3)
+        for i, row in corr_df.iterrows():
+            r_cols[i].metric(
+                row["Comparison"].replace("Radiologist vs ", "r — "),
+                f"{row['Pearson r']:.4f}",
+            )
+        st.plotly_chart(fig_rad_corr, use_container_width=True)
+        st.dataframe(corr_df, use_container_width=True, hide_index=True)
+        st.markdown(
+            "**Note:** Longer radiologist turnaround on a scan does not predict longer algo "
+            "processing on that same scan. Algo runtime looks independent of radiologist time here."
         )
 
         st.divider()
