@@ -31,31 +31,33 @@ DEPT_ALGO_COLORS = {
 DEPT_LINE_DASH = {"ED": "solid", "IN": "dash"}
 
 
-def streamlit_chart_bg() -> str:
+def streamlit_theme_colors() -> tuple[str, str, str]:
+    """Background, text, and grid colors for the active Streamlit theme."""
+    is_dark = False
     try:
-        bg = st.get_option("theme.backgroundColor")
-        if bg:
-            return bg
+        theme_type = st.context.theme.get("type")
+        if theme_type == "dark":
+            is_dark = True
+        elif theme_type == "light":
+            is_dark = False
+    except Exception:
+        try:
+            is_dark = st.get_option("theme.base") == "dark"
+        except Exception:
+            pass
+
+    try:
+        bg = st.context.theme.get("backgroundColor")
+        fg = st.context.theme.get("textColor")
+        if bg and fg:
+            grid = "#464646" if is_dark else "#d0d0d0"
+            return bg, fg, grid
     except Exception:
         pass
-    try:
-        return "#0e1117" if st.get_option("theme.base") == "dark" else "#ffffff"
-    except Exception:
-        return "#ffffff"
 
-
-def streamlit_chart_fg() -> str:
-    try:
-        return "#fafafa" if st.get_option("theme.base") == "dark" else "#31333f"
-    except Exception:
-        return "#31333f"
-
-
-def streamlit_chart_grid() -> str:
-    try:
-        return "#3d3d3d" if st.get_option("theme.base") == "dark" else "#d0d0d0"
-    except Exception:
-        return "#d0d0d0"
+    if is_dark:
+        return "#0e1117", "#fafafa", "#464646"
+    return "#ffffff", "#31333f", "#d0d0d0"
 
 
 def label_bar_traces(
@@ -857,9 +859,7 @@ def diagnostic_radar_chart(metrics_df: pd.DataFrame) -> go.Figure:
                 opacity=0.45,
             )
         )
-    bg = streamlit_chart_bg()
-    fg = streamlit_chart_fg()
-    grid = streamlit_chart_grid()
+    bg, fg, grid = streamlit_theme_colors()
     fig.update_layout(
         title=dict(text="Diagnostic Profile", font=dict(color=fg)),
         paper_bgcolor=bg,
@@ -1656,6 +1656,7 @@ with tab3:
         st.plotly_chart(
             diagnostic_radar_chart(metrics_df),
             use_container_width=True,
+            theme=None,
         )
 
     st.dataframe(metrics_df, use_container_width=True, hide_index=True)
